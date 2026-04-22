@@ -9,31 +9,54 @@ import (
 
 // GetLocation fetches the metadata for a location by its numeric ID.
 //
-// Endpoint: GET /api/v1/locations/web_info/?location_id=<id>
+// Endpoint: GET /api/v1/locations/<id>/info/
 func (c *Client) GetLocation(ctx context.Context, id string) (*Location, error) {
 	if id == "" {
 		return nil, fmt.Errorf("instagram: GetLocation: id required")
 	}
-	q := url.Values{}
-	q.Set("location_id", id)
 	var resp struct {
-		NativeLocationData struct {
-			LocationInfo json.RawMessage `json:"location_info"`
-		} `json:"native_location_data"`
-		Status string `json:"status"`
+		Location json.RawMessage `json:"location"`
+		Status   string          `json:"status"`
 	}
-	if err := c.doJSON(ctx, "GET", "/api/v1/locations/web_info/", q, nil, &resp); err != nil {
+	if err := c.doJSON(ctx, "GET", "/api/v1/locations/"+id+"/info/", nil, nil, &resp); err != nil {
 		return nil, err
 	}
-	if len(resp.NativeLocationData.LocationInfo) == 0 {
+	if len(resp.Location) == 0 {
 		return nil, fmt.Errorf("%w: location %q", ErrNotFound, id)
 	}
 	var loc Location
-	if err := json.Unmarshal(resp.NativeLocationData.LocationInfo, &loc); err != nil {
+	if err := json.Unmarshal(resp.Location, &loc); err != nil {
 		return nil, fmt.Errorf("%w: parse location: %v", ErrUnexpectedResponse, err)
 	}
-	loc.Raw = resp.NativeLocationData.LocationInfo
+	loc.Raw = resp.Location
 	return &loc, nil
+}
+
+// SearchLocations searches Instagram's location index by free-text query.
+//
+// Endpoint: GET /api/v1/location_search/?search_query=<q>
+func (c *Client) SearchLocations(ctx context.Context, query string) ([]*Location, error) {
+	if query == "" {
+		return nil, fmt.Errorf("instagram: SearchLocations: query required")
+	}
+	q := url.Values{}
+	q.Set("search_query", query)
+	var resp struct {
+		Venues []json.RawMessage `json:"venues"`
+		Status string            `json:"status"`
+	}
+	if err := c.doJSON(ctx, "GET", "/api/v1/location_search/", q, nil, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]*Location, 0, len(resp.Venues))
+	for _, raw := range resp.Venues {
+		var loc Location
+		if err := json.Unmarshal(raw, &loc); err == nil {
+			loc.Raw = raw
+			out = append(out, &loc)
+		}
+	}
+	return out, nil
 }
 
 // GetLocationPosts iterates over the recent posts at a location.

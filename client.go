@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -79,6 +80,11 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Honor any active cooldown before pacing — this is the circuit-breaker.
+		// Returns immediately when no cooldown is in effect.
+		if err := c.waitForCooldownInternal(ctx, opts.IsWrite); err != nil {
+			return nil, nil, err
+		}
 		c.waitForGap(ctx, opts.IsWrite)
 
 		req, err := c.buildRequest(ctx, method, u, opts)
@@ -96,8 +102,9 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 			continue
 		}
 
+		// Capture rate signals from headers regardless of status.
+		c.recordSignals(resp, opts.IsWrite)
 		body, classifyErr := c.classifyResponse(resp, opts.IsWrite, method, u)
-		// Always close.
 		_ = resp.Body.Close()
 
 		if classifyErr == nil {
@@ -201,15 +208,33 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	}
 
 	// Detect Instagram's "wipe sessionid" trick — a 302 with Set-Cookie wiping
-	// sessionid means we've been redirected to login.
+	// sessionid means the request was rate-blocked or session-rejected.
+	//
+	// We distinguish by whether the session has already been successfully
+	// validated. If yes, the session is healthy and this is a rate-limit
+	// soft-block; trip the cooldown circuit-breaker. If no, the session
+	// itself is dead.
 	loc := resp.Header.Get("Location")
 	wiped := isLoginRedirect(resp.StatusCode, loc)
 	if wiped {
-		c.markBlocked(isWrite, 0)
-		if isWrite {
-			return body, fmt.Errorf("%w: redirect to %s", ErrWriteSoftBlock, loc)
+		c.validatedMu.Lock()
+		validated := c.validated
+		c.validatedMu.Unlock()
+
+		if !validated {
+			c.rateMu.Lock()
+			c.rateState.LastBlockedAt = time.Now()
+			c.rateState.BlockedReason = "302→login (pre-validation)"
+			c.rateMu.Unlock()
+			return body, fmt.Errorf("%w: redirect to %s", ErrSessionExpired, loc)
 		}
-		return body, fmt.Errorf("%w: redirect to %s", ErrSessionExpired, loc)
+		// Healthy session, so this is a behavioural rate-limit. Trip cooldown.
+		cd := c.cooldownFor(isWrite)
+		c.tripCooldown(isWrite, cd, "302→login")
+		if isWrite {
+			return body, fmt.Errorf("%w: cooldown for %s (redirect to %s)", ErrWriteSoftBlock, cd, loc)
+		}
+		return body, fmt.Errorf("%w: cooldown for %s (redirect to %s)", ErrRateLimited, cd, loc)
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -217,6 +242,12 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 		if shaped := decodeStatusFail(body); shaped != nil {
 			return body, c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
 		}
+		// Any healthy response proves the session works. Mark validated so
+		// that future 302→login responses are classified as rate limits
+		// rather than session expiry.
+		c.validatedMu.Lock()
+		c.validated = true
+		c.validatedMu.Unlock()
 		return body, nil
 	}
 
@@ -234,13 +265,26 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
+		// 401 from a previously-validated session is almost always rate-limit
+		// behaviour ("require_login":true with no body cue), so trip cooldown.
+		c.validatedMu.Lock()
+		validated := c.validated
+		c.validatedMu.Unlock()
+		if validated {
+			cd := c.cooldownFor(isWrite)
+			c.tripCooldown(isWrite, cd, fmt.Sprintf("HTTP %d (validated session)", resp.StatusCode))
+			return body, fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error())
+		}
 		return body, fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
 	case http.StatusNotFound:
 		return body, fmt.Errorf("%w: %s", ErrNotFound, apiErr.Error())
 	case http.StatusTooManyRequests:
 		retry := parseRetryAfter(resp)
-		c.markBlocked(isWrite, retry)
-		return body, fmt.Errorf("%w: %s", ErrRateLimited, apiErr.Error())
+		if retry <= 0 {
+			retry = c.cooldownFor(isWrite)
+		}
+		c.tripCooldown(isWrite, retry, "HTTP 429")
+		return body, fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, retry, apiErr.Error())
 	}
 
 	return body, apiErr
@@ -263,8 +307,9 @@ func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL stri
 	case strings.Contains(msg, "useragent"):
 		return fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
 	case strings.Contains(msg, "wait a few minutes") || strings.Contains(msg, "try again later"):
-		c.markBlocked(isWrite, 60*time.Second)
-		return fmt.Errorf("%w: %s", ErrRateLimited, apiErr.Error())
+		cd := c.cooldownFor(isWrite)
+		c.tripCooldown(isWrite, cd, "wait-a-few-minutes")
+		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error())
 	case strings.Contains(msg, "media not found") || strings.Contains(msg, "media_not_found"):
 		return fmt.Errorf("%w: %s", ErrMediaUnavailable, apiErr.Error())
 	case strings.Contains(msg, "user not found") || strings.Contains(msg, "user_not_found"):
@@ -272,11 +317,15 @@ func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL stri
 	case strings.Contains(msg, "private"):
 		return fmt.Errorf("%w: %s", ErrPrivateAccount, apiErr.Error())
 	case strings.Contains(msg, "feedback_required"):
-		c.markBlocked(isWrite, 5*time.Minute)
-		if isWrite {
-			return fmt.Errorf("%w: %s", ErrWriteSoftBlock, apiErr.Error())
+		cd := c.cooldownFor(isWrite)
+		if cd < 5*time.Minute {
+			cd = 5 * time.Minute
 		}
-		return fmt.Errorf("%w: %s", ErrRateLimited, apiErr.Error())
+		c.tripCooldown(isWrite, cd, "feedback_required")
+		if isWrite {
+			return fmt.Errorf("%w: cooldown for %s (%s)", ErrWriteSoftBlock, cd, apiErr.Error())
+		}
+		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error())
 	}
 	return apiErr
 }
@@ -346,8 +395,10 @@ func shouldRetryStatus(status int, err error) bool {
 		errors.Is(err, ErrMediaUnavailable) || errors.Is(err, ErrCSRF) {
 		return false
 	}
-	if status == http.StatusTooManyRequests {
-		return true
+	// Once a cooldown is tripped, immediate retries are pointless and would
+	// just hammer the same endpoint until cooldown clears. Surface the error.
+	if errors.Is(err, ErrRateLimited) {
+		return false
 	}
 	if status >= 500 && status < 600 {
 		return true
@@ -406,12 +457,116 @@ func (c *Client) waitForGap(ctx context.Context, isWrite bool) {
 	c.lastReqAt = time.Now()
 }
 
-func (c *Client) markBlocked(isWrite bool, retryAfter time.Duration) {
+// cooldownFor returns the configured cooldown duration for the request kind.
+func (c *Client) cooldownFor(isWrite bool) time.Duration {
+	if isWrite {
+		if c.writeCooldown > 0 {
+			return c.writeCooldown
+		}
+		return defaultWriteCooldown
+	}
+	if c.readCooldown > 0 {
+		return c.readCooldown
+	}
+	return defaultReadCooldown
+}
+
+// tripCooldown sets the cooldown deadline for the request kind. Subsequent
+// requests of the same kind will block until the deadline (see waitForCooldownInternal).
+func (c *Client) tripCooldown(isWrite bool, d time.Duration, reason string) {
+	if d <= 0 {
+		return
+	}
+	until := time.Now().Add(d)
 	c.rateMu.Lock()
 	defer c.rateMu.Unlock()
 	c.rateState.LastBlockedAt = time.Now()
-	c.rateState.RetryAfter = retryAfter
+	c.rateState.BlockedReason = reason
 	if isWrite {
+		c.cooldownWrt = until
+		c.rateState.CooldownWriteUntil = until
 		c.rateState.WriteBlocked = true
+	} else {
+		c.cooldownRead = until
+		c.rateState.CooldownReadUntil = until
+	}
+}
+
+// waitForCooldownInternal blocks the next request if the matching cooldown
+// window is still active. Returns ctx.Err() on cancellation.
+func (c *Client) waitForCooldownInternal(ctx context.Context, isWrite bool) error {
+	for {
+		c.rateMu.Lock()
+		var until time.Time
+		if isWrite {
+			until = c.cooldownWrt
+		} else {
+			until = c.cooldownRead
+		}
+		c.rateMu.Unlock()
+		if until.IsZero() {
+			return nil
+		}
+		wait := time.Until(until)
+		if wait <= 0 {
+			return nil
+		}
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// recordSignals captures Instagram's soft rate-signal headers from any response.
+//
+// These headers are present on healthy and rate-limited responses alike and
+// are useful for monitoring rather than blocking decisions:
+//
+//   - x-ig-capacity-level    integer 0–3 (3 = healthy)
+//   - x-ig-peak-time         "1" if at peak
+//   - x-ig-peak-v2           "1" if at peak (secondary)
+//   - x-fb-connection-quality opaque string ("EXCELLENT; q=0.9, rtt=18, ...")
+//   - x-ig-origin-region     server origin region
+//   - x-ig-server-region     server pop region
+//   - x-ig-request-elapsed-time-ms  server processing time
+func (c *Client) recordSignals(resp *http.Response, isWrite bool) {
+	cap := -1
+	if v := resp.Header.Get("x-ig-capacity-level"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cap = n
+		}
+	}
+	elapsed := 0
+	if v := resp.Header.Get("x-ig-request-elapsed-time-ms"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			elapsed = n
+		}
+	}
+	now := time.Now()
+	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
+	if cap >= 0 {
+		c.rateState.CapacityLevel = cap
+	}
+	c.rateState.PeakTime = strings.TrimSpace(resp.Header.Get("x-ig-peak-time")) == "1"
+	c.rateState.PeakV2 = strings.TrimSpace(resp.Header.Get("x-ig-peak-v2")) == "1"
+	if v := resp.Header.Get("x-fb-connection-quality"); v != "" {
+		c.rateState.ConnectionQuality = v
+	}
+	if v := resp.Header.Get("x-ig-origin-region"); v != "" {
+		c.rateState.OriginRegion = v
+	}
+	if v := resp.Header.Get("x-ig-server-region"); v != "" {
+		c.rateState.ServerRegion = v
+	}
+	if elapsed > 0 {
+		c.rateState.LastServerElapsedMs = elapsed
+	}
+	if isWrite {
+		c.rateState.LastWriteAt = now
+	} else {
+		c.rateState.LastReadAt = now
 	}
 }

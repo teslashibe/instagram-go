@@ -53,11 +53,22 @@ const (
 	defaultUserAgent = "Mozilla/5.0 (Linux; Android 9; GM1903 Build/PKQ1.190110.001; wv) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/75.0.3770.143 Mobile Safari/537.36 " +
 		"Instagram 103.1.0.15.119 Android (28/9; 420dpi; 1080x2260; OnePlus; GM1903; OnePlus7; qcom; sv_SE; 164094539)"
-	defaultMinGap      = 1500 * time.Millisecond
-	defaultMinWriteGap = 6 * time.Second
+	// defaultMinGap is the minimum delay between read requests. Empirically,
+	// Instagram tolerates ~15 reads/min from a web session before tripping
+	// "Please wait a few minutes." 4s = 15 reads/min with a small safety margin.
+	// Tune via WithMinRequestGap.
+	defaultMinGap      = 4 * time.Second
+	defaultMinWriteGap = 12 * time.Second
 	defaultMaxRetries  = 3
 	defaultRetryBase   = 750 * time.Millisecond
 	defaultTimeout     = 30 * time.Second
+
+	// Default cooldown windows applied when Instagram signals a rate limit.
+	// Read cooldown is conservative because Instagram's "wait a few minutes"
+	// soft-block typically clears within 5–10 min. Write cooldown is longer
+	// because write soft-blocks last 15+ min on web sessions.
+	defaultReadCooldown  = 5 * time.Minute
+	defaultWriteCooldown = 15 * time.Minute
 )
 
 // Cookies holds the Instagram session cookies obtained from a browser export.
@@ -87,6 +98,8 @@ type Client struct {
 	retryBase      time.Duration
 	minGap         time.Duration
 	writeGap       time.Duration
+	readCooldown   time.Duration
+	writeCooldown  time.Duration
 	skipValidation bool
 
 	gapMu       sync.Mutex
@@ -94,20 +107,48 @@ type Client struct {
 	writeMu     sync.Mutex
 	lastWriteAt time.Time
 
-	rateMu    sync.Mutex
-	rateState RateLimitState
+	rateMu       sync.Mutex
+	rateState    RateLimitState
+	cooldownRead time.Time
+	cooldownWrt  time.Time
 
-	viewer *User
+	validatedMu sync.Mutex
+	validated   bool
+	viewer      *User
 }
 
-// RateLimitState is a best-effort snapshot of the most recent rate-limit
-// signal observed from Instagram. Instagram does not publish rate-limit
-// headers, so RetryAfter is only set when the server returned 429 or a
-// "wait a few minutes" body.
+// RateLimitState is the most recent rate-limit observation, parsed from both
+// Instagram's response body cues ("wait a few minutes") and the soft signals
+// Instagram exposes via response headers (x-ig-*, x-fb-connection-quality).
+//
+// Instagram does NOT publish standard rate-limit headers. The following are
+// the closest server-side hints we can act on:
+//
+//   - x-ig-capacity-level: 0–3, where 3 = healthy, 0 = degraded
+//   - x-ig-peak-time:      "1" if Instagram considers traffic at peak
+//   - x-ig-peak-v2:        secondary peak hint
+//   - x-fb-connection-quality: e.g. "EXCELLENT; q=0.9, rtt=18, ..."
+//
+// CooldownReadUntil / CooldownWriteUntil are set when Instagram returns the
+// "Please wait a few minutes" body or a 302-to-login (the soft-block pattern).
+// All subsequent requests of the same kind block until the cooldown elapses.
+//
+// Use Client.RateLimit() to read, Client.WaitForCooldown() to block until clear.
 type RateLimitState struct {
-	LastBlockedAt time.Time
-	RetryAfter    time.Duration
-	WriteBlocked  bool
+	LastBlockedAt       time.Time
+	LastReadAt          time.Time
+	LastWriteAt         time.Time
+	CooldownReadUntil   time.Time
+	CooldownWriteUntil  time.Time
+	WriteBlocked        bool
+	BlockedReason       string
+	CapacityLevel       int    // 0 = degraded, 3 = healthy (-1 = unknown)
+	PeakTime            bool   // x-ig-peak-time
+	PeakV2              bool   // x-ig-peak-v2
+	ConnectionQuality   string // x-fb-connection-quality verbatim
+	OriginRegion        string // x-ig-origin-region
+	ServerRegion        string // x-ig-server-region
+	LastServerElapsedMs int    // x-ig-request-elapsed-time-ms
 }
 
 // Option configures a Client.
@@ -186,6 +227,25 @@ func WithMinWriteGap(d time.Duration) Option {
 	return func(c *Client) { c.writeGap = d }
 }
 
+// WithRateLimitCooldown sets how long the client refuses requests after
+// observing a rate-limit signal from Instagram (a "wait a few minutes"
+// body or a 302-to-login redirect). Reads and writes have independent
+// cooldown budgets.
+//
+// Pass 0 to use the defaults (5m read, 15m write). Pass any positive value
+// to override; pass a tiny value (e.g. 1ms) to effectively disable the
+// circuit-breaker (not recommended).
+func WithRateLimitCooldown(read, write time.Duration) Option {
+	return func(c *Client) {
+		if read > 0 {
+			c.readCooldown = read
+		}
+		if write > 0 {
+			c.writeCooldown = write
+		}
+	}
+}
+
 // WithSkipSessionValidation disables the initial session check inside New.
 // Useful for offline tests or when the caller wants to defer validation.
 func WithSkipSessionValidation() Option {
@@ -211,12 +271,15 @@ func New(cookies Cookies, opts ...Option) (*Client, error) {
 			Timeout:       defaultTimeout,
 			CheckRedirect: noFollowRedirect,
 		},
-		userAgent:  defaultUserAgent,
-		appID:      defaultAppID,
-		maxRetries: defaultMaxRetries,
-		retryBase:  defaultRetryBase,
-		minGap:     defaultMinGap,
-		writeGap:   defaultMinWriteGap,
+		userAgent:     defaultUserAgent,
+		appID:         defaultAppID,
+		maxRetries:    defaultMaxRetries,
+		retryBase:     defaultRetryBase,
+		minGap:        defaultMinGap,
+		writeGap:      defaultMinWriteGap,
+		readCooldown:  defaultReadCooldown,
+		writeCooldown: defaultWriteCooldown,
+		rateState:     RateLimitState{CapacityLevel: -1},
 	}
 
 	for _, o := range opts {
@@ -236,15 +299,47 @@ func New(cookies Cookies, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// validateSession fetches the authenticated user via /api/v1/accounts/current_user/.
-// On success the result is cached on the client and returned by Me.
+// validateSession fetches the authenticated user.
+// On success the result is cached on the client and returned by Me, and the
+// validated flag is set so future 302-to-login responses are correctly
+// classified as rate limits rather than session expiry.
 func (c *Client) validateSession(ctx context.Context) error {
 	u, err := c.currentUser(ctx)
 	if err != nil {
 		return err
 	}
+	c.validatedMu.Lock()
+	c.validated = true
 	c.viewer = u
+	c.validatedMu.Unlock()
 	return nil
+}
+
+// WaitForCooldown blocks until any active read/write cooldown has expired,
+// or the context is cancelled. Returns ctx.Err() on cancellation.
+func (c *Client) WaitForCooldown(ctx context.Context) error {
+	for {
+		c.rateMu.Lock()
+		read := c.cooldownRead
+		write := c.cooldownWrt
+		c.rateMu.Unlock()
+		now := time.Now()
+		var until time.Time
+		if read.After(now) {
+			until = read
+		}
+		if write.After(now) && (until.IsZero() || write.After(until)) {
+			until = write
+		}
+		if until.IsZero() {
+			return nil
+		}
+		select {
+		case <-time.After(time.Until(until)):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // Me returns the authenticated user's profile. The result is cached at

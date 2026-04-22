@@ -5,32 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 )
 
-// SearchUsers fuzzy-searches Instagram for users matching a query.
+// SearchUsers searches Instagram for users matching a query.
 //
-// Endpoint: GET /api/v1/web/search/topsearch/?context=user&query=<q>
-func (c *Client) SearchUsers(ctx context.Context, query string) ([]*User, error) {
+// Endpoint: GET /api/v1/users/search/?q=<query>&count=<n>
+//
+// count clamps to 50 server-side; pass 0 to use the default (~12).
+func (c *Client) SearchUsers(ctx context.Context, query string, count int) ([]*User, error) {
 	if query == "" {
 		return nil, fmt.Errorf("instagram: SearchUsers: query required")
 	}
 	q := url.Values{}
-	q.Set("context", "user")
-	q.Set("query", query)
-	q.Set("rank_token", "")
-	q.Set("include_reel", "true")
-	var resp struct {
-		Users []struct {
-			User json.RawMessage `json:"user"`
-		} `json:"users"`
-		Status string `json:"status"`
+	q.Set("q", query)
+	if count > 0 {
+		q.Set("count", strconv.Itoa(count))
 	}
-	if err := c.doJSON(ctx, "GET", "/api/v1/web/search/topsearch/", q, nil, &resp); err != nil {
+	var resp struct {
+		Users      []json.RawMessage `json:"users"`
+		NumResults int               `json:"num_results"`
+		Status     string            `json:"status"`
+	}
+	if err := c.doJSON(ctx, "GET", "/api/v1/users/search/", q, nil, &resp); err != nil {
 		return nil, err
 	}
 	out := make([]*User, 0, len(resp.Users))
-	for _, e := range resp.Users {
-		u, err := parseUser(e.User)
+	for _, raw := range resp.Users {
+		u, err := parseUser(raw)
 		if err != nil {
 			continue
 		}
@@ -99,24 +101,27 @@ func (c *Client) Search(ctx context.Context, query string) (*SearchResult, error
 	return result, nil
 }
 
-// GetSuggestedUsers returns Instagram's "Suggested for you" recommendations.
+// GetSuggestedUsers returns up to ~80 accounts Instagram suggests based on
+// the given seed user (typically the logged-in user's ID for "Suggested for
+// you", but any user ID works to get accounts related to that user).
 //
-// Endpoint: GET /api/v1/discover/ayml/
-func (c *Client) GetSuggestedUsers(ctx context.Context) ([]*User, error) {
-	var resp struct {
-		NewSuggestedUsers struct {
-			Suggestions []struct {
-				User json.RawMessage `json:"user"`
-			} `json:"suggestions"`
-		} `json:"new_suggested_users"`
-		Status string `json:"status"`
+// Endpoint: GET /api/v1/discover/chaining/?target_id=<user_id>
+func (c *Client) GetSuggestedUsers(ctx context.Context, targetID string) ([]*User, error) {
+	if targetID == "" {
+		return nil, fmt.Errorf("instagram: GetSuggestedUsers: targetID required")
 	}
-	if err := c.doJSON(ctx, "GET", "/api/v1/discover/ayml/", nil, nil, &resp); err != nil {
+	q := url.Values{}
+	q.Set("target_id", targetID)
+	var resp struct {
+		Users  []json.RawMessage `json:"users"`
+		Status string            `json:"status"`
+	}
+	if err := c.doJSON(ctx, "GET", "/api/v1/discover/chaining/", q, nil, &resp); err != nil {
 		return nil, err
 	}
-	out := make([]*User, 0, len(resp.NewSuggestedUsers.Suggestions))
-	for _, s := range resp.NewSuggestedUsers.Suggestions {
-		if u, err := parseUser(s.User); err == nil {
+	out := make([]*User, 0, len(resp.Users))
+	for _, raw := range resp.Users {
+		if u, err := parseUser(raw); err == nil {
 			out = append(out, u)
 		}
 	}

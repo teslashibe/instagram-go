@@ -103,15 +103,20 @@ func (c *Client) GetLikers(ctx context.Context, mediaPK string) ([]*User, error)
 	return out, nil
 }
 
-// GetCommentLikers fetches the users who liked a specific comment.
+// GetCommentLikers fetches the users who liked a specific comment on a post.
 //
-// Endpoint: GET /api/v1/media/<comment_id>/comment_likers/
-func (c *Client) GetCommentLikers(ctx context.Context, commentID string) ([]*User, error) {
+// Endpoint: GET /api/v1/media/<media_pk>/comment_likers/?comment_id=<id>
+func (c *Client) GetCommentLikers(ctx context.Context, mediaPK, commentID string) ([]*User, error) {
+	if mediaPK == "" || commentID == "" {
+		return nil, fmt.Errorf("instagram: GetCommentLikers: mediaPK and commentID required")
+	}
+	q := url.Values{}
+	q.Set("comment_id", commentID)
 	var resp struct {
 		Users  []json.RawMessage `json:"users"`
 		Status string            `json:"status"`
 	}
-	if err := c.doJSON(ctx, "GET", "/api/v1/media/"+commentID+"/comment_likers/", nil, nil, &resp); err != nil {
+	if err := c.doJSON(ctx, "GET", "/api/v1/media/"+mediaPK+"/comment_likers/", q, nil, &resp); err != nil {
 		return nil, err
 	}
 	out := make([]*User, 0, len(resp.Users))

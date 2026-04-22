@@ -10,32 +10,63 @@ import (
 )
 
 // GetPost fetches a single post by its shortcode (the bit between /p/ and /
-// in the public URL).
+// in the public URL, e.g. "DXHKcyvEWfr").
 //
-// Endpoint: GET /api/v1/media/<media_id>/info/ via shortcode lookup using
-// /graphql/query/?query_hash=...&variables=... is unstable, so we use the
-// /api/v1/media/<media_pk>/info/ endpoint after resolving the shortcode via
-// the GraphQL mapping. For simplicity and stability, we hit the public
-// /p/<code>/?__a=1&__d=dis endpoint which still works for authenticated calls.
+// Internally the shortcode is decoded to a numeric media ID via the standard
+// Instagram base64 alphabet, then GET /api/v1/media/{media_id}/info/ is hit.
+//
+// To fetch by numeric ID directly, use GetPostByID.
 func (c *Client) GetPost(ctx context.Context, shortcode string) (*Post, error) {
 	if shortcode == "" {
 		return nil, fmt.Errorf("instagram: GetPost: shortcode required")
 	}
-	q := url.Values{}
-	q.Set("__a", "1")
-	q.Set("__d", "dis")
-	var resp struct {
-		Items []json.RawMessage `json:"items"`
+	id, err := shortcodeToMediaID(shortcode)
+	if err != nil {
+		return nil, fmt.Errorf("instagram: GetPost: %w", err)
 	}
-	if err := c.doJSON(ctx, "GET", "/p/"+shortcode+"/", q, &requestOptions{
-		Referer: baseURL + "/p/" + shortcode + "/",
-	}, &resp); err != nil {
+	return c.GetPostByID(ctx, id)
+}
+
+// GetPostByID fetches a single post by its numeric media ID (Post.PK).
+//
+// Endpoint: GET /api/v1/media/<media_id>/info/
+func (c *Client) GetPostByID(ctx context.Context, mediaID string) (*Post, error) {
+	if mediaID == "" {
+		return nil, fmt.Errorf("instagram: GetPostByID: mediaID required")
+	}
+	var resp struct {
+		Items  []json.RawMessage `json:"items"`
+		Status string            `json:"status"`
+	}
+	if err := c.doJSON(ctx, "GET", "/api/v1/media/"+mediaID+"/info/", nil, nil, &resp); err != nil {
 		return nil, err
 	}
 	if len(resp.Items) == 0 {
-		return nil, fmt.Errorf("%w: post %q", ErrNotFound, shortcode)
+		return nil, fmt.Errorf("%w: media_id %q", ErrNotFound, mediaID)
 	}
 	return parsePost(resp.Items[0])
+}
+
+// shortcodeToMediaID decodes Instagram's URL-safe base64 shortcode into its
+// numeric media ID. Alphabet is the standard base64 (A-Z a-z 0-9 + /) with
+// '-' and '_' substituted for '+' and '/' to make it URL-safe.
+//
+// e.g. "DXHKcyvEWfr" -> "3875111963462821867"
+func shortcodeToMediaID(code string) (string, error) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	idx := make(map[byte]uint64, len(alphabet))
+	for i := 0; i < len(alphabet); i++ {
+		idx[alphabet[i]] = uint64(i)
+	}
+	var n uint64
+	for i := 0; i < len(code); i++ {
+		v, ok := idx[code[i]]
+		if !ok {
+			return "", fmt.Errorf("invalid shortcode character %q in %q", code[i], code)
+		}
+		n = n*64 + v
+	}
+	return strconv.FormatUint(n, 10), nil
 }
 
 // GetPosts iterates over the timeline posts of a user (most recent first).
@@ -164,12 +195,15 @@ func (c *Client) GetTimeline() *Iterator[*Post] {
 	})
 }
 
-// GetExplore fetches the explore feed.
+// GetExplore fetches the Explore feed.
 //
-// Endpoint: GET /api/v1/discover/web/explore_grid/
+// Endpoint: GET /api/v1/discover/topical_explore/
 func (c *Client) GetExplore() *Iterator[*Post] {
 	return newIterator(func(ctx context.Context, cursor string) (Page[*Post], error) {
 		q := url.Values{}
+		q.Set("is_prefetch", "true")
+		q.Set("module", "explore_popular")
+		q.Set("use_sectional_payload", "true")
 		if cursor != "" {
 			q.Set("max_id", cursor)
 		}
@@ -183,8 +217,9 @@ func (c *Client) GetExplore() *Iterator[*Post] {
 			} `json:"sectional_items"`
 			NextMaxID     string `json:"next_max_id"`
 			MoreAvailable bool   `json:"more_available"`
+			Status        string `json:"status"`
 		}
-		if err := c.doJSON(ctx, "GET", "/api/v1/discover/web/explore_grid/", q, nil, &resp); err != nil {
+		if err := c.doJSON(ctx, "GET", "/api/v1/discover/topical_explore/", q, nil, &resp); err != nil {
 			return Page[*Post]{}, err
 		}
 		var raws []json.RawMessage

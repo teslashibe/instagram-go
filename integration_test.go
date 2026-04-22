@@ -4,10 +4,19 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	instagram "github.com/teslashibe/instagram-go"
+)
+
+// Single shared client across all integration tests so that the rate-limit
+// circuit-breaker is honoured globally (one cooldown trips all subsequent
+// tests rather than each test independently re-tripping the limiter).
+var (
+	sharedClient   *instagram.Client
+	sharedClientMu sync.Mutex
 )
 
 // envOrSkip skips the test if the required env vars are not present.
@@ -35,12 +44,38 @@ func envOrSkip(t *testing.T) instagram.Cookies {
 
 func newClient(t *testing.T) *instagram.Client {
 	t.Helper()
+	sharedClientMu.Lock()
+	defer sharedClientMu.Unlock()
+	if sharedClient != nil {
+		return sharedClient
+	}
 	cookies := envOrSkip(t)
 	c, err := instagram.New(cookies)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	sharedClient = c
 	return c
+}
+
+// logRate emits a one-line summary of the current rate-limit telemetry
+// after a meaningful API call. Useful for spotting when we're approaching
+// a cooldown.
+func logRate(t *testing.T, c *instagram.Client) {
+	t.Helper()
+	r := c.RateLimit()
+	now := time.Now()
+	cdRead := "none"
+	if r.CooldownReadUntil.After(now) {
+		cdRead = time.Until(r.CooldownReadUntil).Round(time.Second).String()
+	}
+	cdWrite := "none"
+	if r.CooldownWriteUntil.After(now) {
+		cdWrite = time.Until(r.CooldownWriteUntil).Round(time.Second).String()
+	}
+	t.Logf("    [rate] capacity=%d peak=%v peakV2=%v conn=%q origin=%s server_ms=%d cooldown_read=%s cooldown_write=%s reason=%q",
+		r.CapacityLevel, r.PeakTime, r.PeakV2, r.ConnectionQuality,
+		r.OriginRegion, r.LastServerElapsedMs, cdRead, cdWrite, r.BlockedReason)
 }
 
 func TestIntegration_New_ValidatesSession(t *testing.T) {
@@ -55,6 +90,36 @@ func TestIntegration_New_ValidatesSession(t *testing.T) {
 		t.Fatalf("Me returned empty user: %#v", me)
 	}
 	t.Logf("PASS: authenticated as @%s (id=%s)", me.Username, me.ID)
+	logRate(t, c)
+}
+
+// TestIntegration_RateSignalsParsed asserts that after one healthy call the
+// client has captured Instagram's soft rate-limit signal headers.
+//
+// Instagram does NOT expose standard X-RateLimit-* / Retry-After headers,
+// so we rely on x-ig-capacity-level, x-ig-peak-time/v2, and the body cue
+// "Please wait a few minutes" plus 302→login as the signals to act on.
+func TestIntegration_RateSignalsParsed(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := c.Me(ctx); err != nil {
+		t.Fatalf("Me: %v", err)
+	}
+	r := c.RateLimit()
+	if r.CapacityLevel < 0 {
+		t.Errorf("expected x-ig-capacity-level captured, got %d", r.CapacityLevel)
+	}
+	if r.LastReadAt.IsZero() {
+		t.Error("expected LastReadAt populated after read")
+	}
+	if r.OriginRegion == "" && r.ServerRegion == "" {
+		t.Error("expected at least one of OriginRegion/ServerRegion captured")
+	}
+	if r.LastServerElapsedMs <= 0 {
+		t.Error("expected x-ig-request-elapsed-time-ms captured")
+	}
+	logRate(t, c)
 }
 
 func TestIntegration_New_RejectsMissingCookies(t *testing.T) {
@@ -342,7 +407,7 @@ func TestIntegration_SearchUsers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	users, err := c.SearchUsers(ctx, "natgeo")
+	users, err := c.SearchUsers(ctx, "natgeo", 5)
 	if err != nil {
 		t.Fatalf("SearchUsers: %v", err)
 	}
