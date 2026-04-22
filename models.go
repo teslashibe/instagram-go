@@ -9,37 +9,37 @@ import "encoding/json"
 // JS Number safe range and are sometimes serialised as strings, sometimes as
 // numbers. The client normalises to strings.
 type User struct {
-	ID                  string `json:"pk_id,omitempty"`
-	Username            string `json:"username,omitempty"`
-	FullName            string `json:"full_name,omitempty"`
-	Biography           string `json:"biography,omitempty"`
-	ExternalURL         string `json:"external_url,omitempty"`
-	ProfilePicURL       string `json:"profile_pic_url,omitempty"`
-	ProfilePicURLHD     string `json:"profile_pic_url_hd,omitempty"`
-	IsPrivate           bool   `json:"is_private,omitempty"`
-	IsVerified          bool   `json:"is_verified,omitempty"`
-	IsBusiness          bool   `json:"is_business,omitempty"`
-	IsProfessional      bool   `json:"is_professional_account,omitempty"`
-	BusinessCategory    string `json:"business_category_name,omitempty"`
-	Category            string `json:"category_name,omitempty"`
-	FollowerCount       int    `json:"follower_count,omitempty"`
-	FollowingCount      int    `json:"following_count,omitempty"`
-	MediaCount          int    `json:"media_count,omitempty"`
-	TotalIGTVCount      int    `json:"total_igtv_videos,omitempty"`
-	HasReels            bool   `json:"has_clips,omitempty"`
-	HasGuides           bool   `json:"has_guides,omitempty"`
-	HasChaining         bool   `json:"has_chaining,omitempty"`
-	HasHighlightReels   bool   `json:"has_highlight_reels,omitempty"`
-	HideLikeAndViewCnts bool   `json:"hide_like_and_view_counts,omitempty"`
-	IsBusinessOwned     bool   `json:"is_business_owned_by_viewer,omitempty"`
-	PublicEmail         string `json:"public_email,omitempty"`
-	PublicPhone         string `json:"public_phone_number,omitempty"`
-	ContactPhone        string `json:"contact_phone_number,omitempty"`
-	AddressStreet       string `json:"address_street,omitempty"`
-	City                string `json:"city_name,omitempty"`
-	Zip                 string `json:"zip,omitempty"`
-	AccountType         int    `json:"account_type,omitempty"`
-	Pronouns           []string `json:"pronouns,omitempty"`
+	ID                  string   `json:"pk_id,omitempty"`
+	Username            string   `json:"username,omitempty"`
+	FullName            string   `json:"full_name,omitempty"`
+	Biography           string   `json:"biography,omitempty"`
+	ExternalURL         string   `json:"external_url,omitempty"`
+	ProfilePicURL       string   `json:"profile_pic_url,omitempty"`
+	ProfilePicURLHD     string   `json:"profile_pic_url_hd,omitempty"`
+	IsPrivate           bool     `json:"is_private,omitempty"`
+	IsVerified          bool     `json:"is_verified,omitempty"`
+	IsBusiness          bool     `json:"is_business,omitempty"`
+	IsProfessional      bool     `json:"is_professional_account,omitempty"`
+	BusinessCategory    string   `json:"business_category_name,omitempty"`
+	Category            string   `json:"category_name,omitempty"`
+	FollowerCount       int      `json:"follower_count,omitempty"`
+	FollowingCount      int      `json:"following_count,omitempty"`
+	MediaCount          int      `json:"media_count,omitempty"`
+	TotalIGTVCount      int      `json:"total_igtv_videos,omitempty"`
+	HasReels            bool     `json:"has_clips,omitempty"`
+	HasGuides           bool     `json:"has_guides,omitempty"`
+	HasChaining         bool     `json:"has_chaining,omitempty"`
+	HasHighlightReels   bool     `json:"has_highlight_reels,omitempty"`
+	HideLikeAndViewCnts bool     `json:"hide_like_and_view_counts,omitempty"`
+	IsBusinessOwned     bool     `json:"is_business_owned_by_viewer,omitempty"`
+	PublicEmail         string   `json:"public_email,omitempty"`
+	PublicPhone         string   `json:"public_phone_number,omitempty"`
+	ContactPhone        string   `json:"contact_phone_number,omitempty"`
+	AddressStreet       string   `json:"address_street,omitempty"`
+	City                string   `json:"city_name,omitempty"`
+	Zip                 string   `json:"zip,omitempty"`
+	AccountType         int      `json:"account_type,omitempty"`
+	Pronouns            []string `json:"pronouns,omitempty"`
 
 	FriendshipStatus *FriendshipStatus `json:"friendship_status,omitempty"`
 
@@ -84,16 +84,16 @@ type Post struct {
 	CaptionUserID string    `json:"caption_user_id,omitempty"`
 	Owner         *User     `json:"user,omitempty"`
 
-	LikeCount       int `json:"like_count"`
-	CommentCount    int `json:"comment_count"`
-	ViewCount       int `json:"view_count,omitempty"`
-	PlayCount       int `json:"play_count,omitempty"`
-	IGTVViewCount   int `json:"igtv_view_count,omitempty"`
-	ReshareCount    int `json:"reshare_count,omitempty"`
-	SaveCount       int `json:"save_count,omitempty"`
-	OriginalWidth   int `json:"original_width,omitempty"`
-	OriginalHeight  int `json:"original_height,omitempty"`
-	VideoDurationS  float64 `json:"video_duration,omitempty"`
+	LikeCount      int     `json:"like_count"`
+	CommentCount   int     `json:"comment_count"`
+	ViewCount      int     `json:"view_count,omitempty"`
+	PlayCount      int     `json:"play_count,omitempty"`
+	IGTVViewCount  int     `json:"igtv_view_count,omitempty"`
+	ReshareCount   int     `json:"reshare_count,omitempty"`
+	SaveCount      int     `json:"save_count,omitempty"`
+	OriginalWidth  int     `json:"original_width,omitempty"`
+	OriginalHeight int     `json:"original_height,omitempty"`
+	VideoDurationS float64 `json:"video_duration,omitempty"`
 
 	HasLiked      bool `json:"has_liked,omitempty"`
 	IsPinned      bool `json:"is_pinned,omitempty"`
@@ -137,22 +137,22 @@ type VideoVersion struct {
 // ClipsMetadata is the reels-specific metadata attached to a Post when
 // product_type == "clips".
 type ClipsMetadata struct {
-	OriginalSoundInfo *AudioInfo `json:"original_sound_info,omitempty"`
-	MusicInfo         *AudioInfo `json:"music_info,omitempty"`
-	AudioRankingInfo  *AudioInfo `json:"audio_ranking_info,omitempty"`
-	OriginalAudioTitle string    `json:"original_audio_title,omitempty"`
+	OriginalSoundInfo  *AudioInfo `json:"original_sound_info,omitempty"`
+	MusicInfo          *AudioInfo `json:"music_info,omitempty"`
+	AudioRankingInfo   *AudioInfo `json:"audio_ranking_info,omitempty"`
+	OriginalAudioTitle string     `json:"original_audio_title,omitempty"`
 }
 
 // AudioInfo describes the audio track used in a reel.
 type AudioInfo struct {
-	AudioAssetID  string  `json:"audio_asset_id,omitempty"`
-	OriginalAudio bool    `json:"original_audio,omitempty"`
-	ArtistName    string  `json:"display_artist,omitempty"`
-	Title         string  `json:"title,omitempty"`
-	DurationMs    int64   `json:"duration_in_ms,omitempty"`
-	OwnerID       string  `json:"original_media_id,omitempty"`
+	AudioAssetID   string `json:"audio_asset_id,omitempty"`
+	OriginalAudio  bool   `json:"original_audio,omitempty"`
+	ArtistName     string `json:"display_artist,omitempty"`
+	Title          string `json:"title,omitempty"`
+	DurationMs     int64  `json:"duration_in_ms,omitempty"`
+	OwnerID        string `json:"original_media_id,omitempty"`
 	ProgressiveURL string `json:"progressive_download_url,omitempty"`
-	IPADURL       string  `json:"dash_manifest,omitempty"`
+	IPADURL        string `json:"dash_manifest,omitempty"`
 }
 
 // Comment is a top-level or threaded comment on a post.
@@ -174,42 +174,42 @@ type Comment struct {
 
 // Hashtag describes a hashtag with profile metadata.
 type Hashtag struct {
-	ID            string `json:"id,omitempty"`
-	Name          string `json:"name"`
-	MediaCount    int    `json:"media_count"`
-	ProfilePicURL string `json:"profile_pic_url,omitempty"`
-	Following     bool   `json:"following"`
-	FollowingCount int   `json:"following_count,omitempty"`
+	ID             string `json:"id,omitempty"`
+	Name           string `json:"name"`
+	MediaCount     int    `json:"media_count"`
+	ProfilePicURL  string `json:"profile_pic_url,omitempty"`
+	Following      bool   `json:"following"`
+	FollowingCount int    `json:"following_count,omitempty"`
 
 	Raw json.RawMessage `json:"-"`
 }
 
 // Location is a geo-tag attached to a post.
 type Location struct {
-	ID            string  `json:"pk,omitempty"`
-	ShortName     string  `json:"short_name,omitempty"`
-	Name          string  `json:"name,omitempty"`
-	Address       string  `json:"address,omitempty"`
-	City          string  `json:"city,omitempty"`
-	Lng           float64 `json:"lng,omitempty"`
-	Lat           float64 `json:"lat,omitempty"`
-	ExternalSource string `json:"external_source,omitempty"`
-	FacebookPlacesID string `json:"facebook_places_id,omitempty"`
-	MediaCount    int     `json:"media_count,omitempty"`
+	ID               string  `json:"pk,omitempty"`
+	ShortName        string  `json:"short_name,omitempty"`
+	Name             string  `json:"name,omitempty"`
+	Address          string  `json:"address,omitempty"`
+	City             string  `json:"city,omitempty"`
+	Lng              float64 `json:"lng,omitempty"`
+	Lat              float64 `json:"lat,omitempty"`
+	ExternalSource   string  `json:"external_source,omitempty"`
+	FacebookPlacesID string  `json:"facebook_places_id,omitempty"`
+	MediaCount       int     `json:"media_count,omitempty"`
 
 	Raw json.RawMessage `json:"-"`
 }
 
 // Story is one item from a user's story tray.
 type Story struct {
-	ID          string    `json:"pk,omitempty"`
-	MediaType   MediaType `json:"media_type"`
-	TakenAt     int64     `json:"taken_at,omitempty"`
-	ExpiringAt  int64     `json:"expiring_at,omitempty"`
-	User        *User     `json:"user,omitempty"`
+	ID            string         `json:"pk,omitempty"`
+	MediaType     MediaType      `json:"media_type"`
+	TakenAt       int64          `json:"taken_at,omitempty"`
+	ExpiringAt    int64          `json:"expiring_at,omitempty"`
+	User          *User          `json:"user,omitempty"`
 	ImageVersions []ImageVersion `json:"image_versions,omitempty"`
 	VideoVersions []VideoVersion `json:"video_versions,omitempty"`
-	Audience      string  `json:"audience,omitempty"`
+	Audience      string         `json:"audience,omitempty"`
 
 	Raw json.RawMessage `json:"-"`
 }

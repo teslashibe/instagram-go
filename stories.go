@@ -13,8 +13,8 @@ import (
 // Endpoint: GET /api/v1/feed/reels_tray/
 func (c *Client) GetStoryTray(ctx context.Context) ([]*StoryReel, error) {
 	var resp struct {
-		Tray []json.RawMessage `json:"tray"`
-		Status string          `json:"status"`
+		Tray   []json.RawMessage `json:"tray"`
+		Status string            `json:"status"`
 	}
 	if err := c.doJSON(ctx, "GET", "/api/v1/feed/reels_tray/", nil, nil, &resp); err != nil {
 		return nil, err
@@ -125,24 +125,24 @@ func (c *Client) MarkStorySeen(ctx context.Context, reelID, mediaPK string, take
 
 // StoryReel is a story tray item — one user's set of stories or a highlight.
 type StoryReel struct {
-	ID          string   `json:"id,omitempty"`
-	User        *User    `json:"user,omitempty"`
-	Title       string   `json:"title,omitempty"`
-	Items       []*Story `json:"items,omitempty"`
-	HasMore     bool     `json:"-"`
-	LatestReelMedia int64 `json:"-"`
+	ID              string   `json:"id,omitempty"`
+	User            *User    `json:"user,omitempty"`
+	Title           string   `json:"title,omitempty"`
+	Items           []*Story `json:"items,omitempty"`
+	HasMore         bool     `json:"-"`
+	LatestReelMedia int64    `json:"-"`
 
 	Raw json.RawMessage `json:"-"`
 }
 
 func parseStoryReel(raw json.RawMessage) (*StoryReel, error) {
 	var aux struct {
-		ID    any    `json:"id"`
-		Title string `json:"title"`
-		User  json.RawMessage `json:"user"`
-		Items []json.RawMessage `json:"items"`
-		LatestReelMedia int64 `json:"latest_reel_media"`
-		HasBesties bool `json:"has_besties_media"`
+		ID              any               `json:"id"`
+		Title           string            `json:"title"`
+		User            json.RawMessage   `json:"user"`
+		Items           []json.RawMessage `json:"items"`
+		LatestReelMedia int64             `json:"latest_reel_media"`
+		HasBesties      bool              `json:"has_besties_media"`
 	}
 	if err := json.Unmarshal(raw, &aux); err != nil {
 		return nil, fmt.Errorf("%w: parse story reel: %v", ErrUnexpectedResponse, err)
@@ -170,16 +170,16 @@ func parseStoryReel(raw json.RawMessage) (*StoryReel, error) {
 
 func parseStory(raw json.RawMessage) (*Story, error) {
 	var aux struct {
-		PK         any   `json:"pk"`
-		MediaType  int   `json:"media_type"`
-		TakenAt    int64 `json:"taken_at"`
-		ExpiringAt int64 `json:"expiring_at"`
-		User       json.RawMessage `json:"user"`
+		PK             any             `json:"pk"`
+		MediaType      int             `json:"media_type"`
+		TakenAt        int64           `json:"taken_at"`
+		ExpiringAt     int64           `json:"expiring_at"`
+		User           json.RawMessage `json:"user"`
 		ImageVersions2 *struct {
 			Candidates []ImageVersion `json:"candidates"`
 		} `json:"image_versions2"`
 		VideoVersions []VideoVersion `json:"video_versions"`
-		Audience string `json:"audience"`
+		Audience      string         `json:"audience"`
 	}
 	if err := json.Unmarshal(raw, &aux); err != nil {
 		return nil, err

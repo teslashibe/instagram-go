@@ -19,25 +19,25 @@ func (c *Client) GetHashtag(ctx context.Context, name string) (*Hashtag, error) 
 	q := url.Values{}
 	q.Set("tag_name", name)
 	var resp struct {
-		Data struct {
-			Tag json.RawMessage `json:"tag"`
-		} `json:"data"`
-		Status string `json:"status"`
+		Data   json.RawMessage `json:"data"`
+		Status string          `json:"status"`
 	}
 	if err := c.doJSON(ctx, "GET", "/api/v1/tags/web_info/", q, &requestOptions{
 		Referer: baseURL + "/explore/tags/" + name + "/",
 	}, &resp); err != nil {
 		return nil, err
 	}
-	if len(resp.Data.Tag) == 0 || string(resp.Data.Tag) == "null" {
+	if len(resp.Data) == 0 || string(resp.Data) == "null" {
 		return nil, fmt.Errorf("%w: hashtag %q", ErrNotFound, name)
 	}
 	var tag Hashtag
-	if err := json.Unmarshal(resp.Data.Tag, &tag); err != nil {
+	if err := json.Unmarshal(resp.Data, &tag); err != nil {
 		return nil, fmt.Errorf("%w: parse hashtag: %v", ErrUnexpectedResponse, err)
 	}
-	tag.Name = name
-	tag.Raw = resp.Data.Tag
+	if tag.Name == "" {
+		tag.Name = name
+	}
+	tag.Raw = resp.Data
 	return &tag, nil
 }
 

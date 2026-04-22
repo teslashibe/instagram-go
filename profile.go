@@ -91,10 +91,10 @@ func parseUser(raw json.RawMessage) (*User, error) {
 		BusinessCat    string `json:"business_category_name"`
 		Category       string `json:"category_name"`
 
-		FollowerCount any `json:"follower_count"`
+		FollowerCount  any `json:"follower_count"`
 		FollowingCount any `json:"following_count"`
-		MediaCount    any `json:"media_count"`
-		TotalIGTV     any `json:"total_igtv_videos"`
+		MediaCount     any `json:"media_count"`
+		TotalIGTV      any `json:"total_igtv_videos"`
 
 		HasReels   bool `json:"has_clips"`
 		HasGuides  bool `json:"has_guides"`
