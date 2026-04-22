@@ -144,15 +144,15 @@ func parseCommentList(raws []json.RawMessage) ([]*Comment, error) {
 
 func parseComment(raw json.RawMessage) (*Comment, error) {
 	var aux struct {
-		PK              any   `json:"pk"`
-		UserID          any   `json:"user_id"`
-		User            json.RawMessage `json:"user"`
-		Text            string `json:"text"`
-		CreatedAt       int64  `json:"created_at"`
-		LikeCount       any    `json:"comment_like_count"`
-		HasLiked        bool   `json:"has_liked_comment"`
-		ChildCount      any    `json:"child_comment_count"`
-		ParentCommentID any    `json:"parent_comment_id"`
+		PK              any               `json:"pk"`
+		UserID          any               `json:"user_id"`
+		User            json.RawMessage   `json:"user"`
+		Text            string            `json:"text"`
+		CreatedAt       int64             `json:"created_at"`
+		LikeCount       any               `json:"comment_like_count"`
+		HasLiked        bool              `json:"has_liked_comment"`
+		ChildCount      any               `json:"child_comment_count"`
+		ParentCommentID any               `json:"parent_comment_id"`
 		ChildComments   []json.RawMessage `json:"preview_child_comments"`
 	}
 	if err := json.Unmarshal(raw, &aux); err != nil {

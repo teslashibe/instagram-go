@@ -91,7 +91,7 @@ func (c *Client) GetReels(userID string) *Iterator[*Post] {
 			form.Set("max_id", cursor)
 		}
 		var resp struct {
-			Items  []struct {
+			Items []struct {
 				Media json.RawMessage `json:"media"`
 			} `json:"items"`
 			PagingInfo struct {
