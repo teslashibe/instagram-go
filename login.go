@@ -31,6 +31,17 @@ type LoginParams struct {
 	// from a residential egress (Instagram challenges datacenter IPs).
 	ProxyURL string
 
+	// VerificationCode is the email/SMS code for Instagram's login challenge
+	// (interposed from unfamiliar IPs). When empty, VerificationProvider is
+	// consulted after the challenge is detected.
+	VerificationCode string
+
+	// VerificationProvider, when set, is called to fetch the login challenge
+	// code on demand (e.g. read from the user's connected Gmail). It is only
+	// invoked if the sidecar reports a verification challenge and no
+	// VerificationCode was pre-supplied.
+	VerificationProvider func(ctx context.Context) (string, error)
+
 	// HTTPClient overrides the client used to talk to the sidecar. Optional.
 	HTTPClient *http.Client
 }
@@ -42,18 +53,20 @@ type LoginResult struct {
 }
 
 type sidecarLoginRequest struct {
-	Platform string `json:"platform"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	ProxyURL string `json:"proxyUrl,omitempty"`
+	Platform         string `json:"platform"`
+	Username         string `json:"username"`
+	Password         string `json:"password"`
+	VerificationCode string `json:"verificationCode,omitempty"`
+	ProxyURL         string `json:"proxyUrl,omitempty"`
 }
 
 type sidecarLoginResponse struct {
-	OK       bool              `json:"ok"`
-	FinalURL string            `json:"finalUrl"`
-	Cookies  map[string]string `json:"cookies"`
-	Hints    []string          `json:"hints"`
-	Error    string            `json:"error"`
+	OK        bool              `json:"ok"`
+	Challenge bool              `json:"challenge"`
+	FinalURL  string            `json:"finalUrl"`
+	Cookies   map[string]string `json:"cookies"`
+	Hints     []string          `json:"hints"`
+	Error     string            `json:"error"`
 }
 
 // Login performs a credential login through the social-login sidecar and
@@ -67,46 +80,54 @@ func Login(ctx context.Context, p LoginParams) (LoginResult, error) {
 		return LoginResult{}, fmt.Errorf("%w: SidecarURL required for credential login", ErrInvalidAuth)
 	}
 
-	body, err := json.Marshal(sidecarLoginRequest{
-		Platform: "instagram",
-		Username: p.Username,
-		Password: p.Password,
-		ProxyURL: p.ProxyURL,
+	httpClient := p.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 120 * time.Second}
+	}
+	endpoint := strings.TrimRight(p.SidecarURL, "/") + "/login"
+
+	out, err := callSidecar(ctx, httpClient, endpoint, sidecarLoginRequest{
+		Platform:         "instagram",
+		Username:         p.Username,
+		Password:         p.Password,
+		VerificationCode: p.VerificationCode,
+		ProxyURL:         p.ProxyURL,
 	})
 	if err != nil {
 		return LoginResult{}, err
 	}
 
-	httpClient := p.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 90 * time.Second}
+	// Instagram interposes an email/SMS code challenge from unfamiliar IPs. If
+	// the sidecar reports one and we have a way to fetch the code, submit it.
+	if !out.OK && isChallenge(out) && p.VerificationCode == "" && p.VerificationProvider != nil {
+		code, perr := p.VerificationProvider(ctx)
+		if perr != nil {
+			return LoginResult{}, fmt.Errorf("instagram login challenge: fetching code: %w", perr)
+		}
+		if code != "" {
+			out, err = callSidecar(ctx, httpClient, endpoint, sidecarLoginRequest{
+				Platform:         "instagram",
+				Username:         p.Username,
+				Password:         p.Password,
+				VerificationCode: code,
+				ProxyURL:         p.ProxyURL,
+			})
+			if err != nil {
+				return LoginResult{}, err
+			}
+		}
 	}
 
-	url := strings.TrimRight(p.SidecarURL, "/") + "/login"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return LoginResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return LoginResult{}, fmt.Errorf("social-login sidecar: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	var out sidecarLoginResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return LoginResult{}, fmt.Errorf("social-login sidecar: bad response (status %d): %s", resp.StatusCode, truncate(string(raw), 200))
-	}
 	if !out.OK {
+		if isChallenge(out) {
+			return LoginResult{}, fmt.Errorf("%w: Instagram requires an email/SMS verification code for this login", ErrChallengeRequired)
+		}
 		detail := out.Error
 		if detail == "" && len(out.Hints) > 0 {
 			detail = strings.Join(out.Hints, "; ")
 		}
 		if detail == "" {
-			detail = fmt.Sprintf("login failed (status %d)", resp.StatusCode)
+			detail = "login failed"
 		}
 		return LoginResult{}, fmt.Errorf("%w: %s", ErrInvalidAuth, detail)
 	}
@@ -129,6 +150,46 @@ func Login(ctx context.Context, p LoginParams) (LoginResult, error) {
 		return LoginResult{}, fmt.Errorf("%w: sidecar returned no session cookies", ErrInvalidAuth)
 	}
 	return LoginResult{Cookies: cookies, FinalURL: out.FinalURL}, nil
+}
+
+// callSidecar performs one POST /login round-trip and decodes the response.
+func callSidecar(ctx context.Context, httpClient *http.Client, endpoint string, body sidecarLoginRequest) (sidecarLoginResponse, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return sidecarLoginResponse{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return sidecarLoginResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return sidecarLoginResponse{}, fmt.Errorf("social-login sidecar: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var out sidecarLoginResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return sidecarLoginResponse{}, fmt.Errorf("social-login sidecar: bad response (status %d): %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+	return out, nil
+}
+
+// isChallenge reports whether the sidecar response indicates a verification
+// challenge (email/SMS code) rather than a hard auth failure.
+func isChallenge(out sidecarLoginResponse) bool {
+	if out.Challenge {
+		return true
+	}
+	for _, h := range out.Hints {
+		if h == "verification_code_required" {
+			return true
+		}
+	}
+	return false
 }
 
 func truncate(s string, n int) string {
