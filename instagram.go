@@ -43,16 +43,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
 	baseURL          = "https://www.instagram.com"
+	defaultAPIHost   = "https://i.instagram.com"
 	defaultAppID     = "936619743392459"
 	defaultUserAgent = "Mozilla/5.0 (Linux; Android 9; GM1903 Build/PKQ1.190110.001; wv) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/75.0.3770.143 Mobile Safari/537.36 " +
 		"Instagram 103.1.0.15.119 Android (28/9; 420dpi; 1080x2260; OnePlus; GM1903; OnePlus7; qcom; sv_SE; 164094539)"
+	defaultAPIAppID     = "567067343352427"
+	defaultAPIUserAgent = "Instagram 321.0.0.0.70 Android (33/13; 420dpi; 1080x2400; Google/google; Pixel 7; panther; panther; en_US; 502001959)"
 	// defaultMinGap is the minimum delay between read requests. Empirically,
 	// Instagram tolerates ~15 reads/min from a web session before tripping
 	// "Please wait a few minutes." 4s = 15 reads/min with a small safety margin.
@@ -92,8 +96,12 @@ type Cookies struct {
 type Client struct {
 	cookies        Cookies
 	httpClient     *http.Client
+	wwwHost        string
+	apiHost        string
 	userAgent      string
 	appID          string
+	apiUserAgent   string
+	apiAppID       string
 	maxRetries     int
 	retryBase      time.Duration
 	minGap         time.Duration
@@ -154,8 +162,9 @@ type RateLimitState struct {
 // Option configures a Client.
 type Option func(*Client)
 
-// WithUserAgent overrides the default Instagram mobile User-Agent string.
-// Most desktop browser UAs are rejected with "useragent mismatch".
+// WithUserAgent overrides the User-Agent string for existing web requests.
+// Most desktop browser UAs are rejected with "useragent mismatch". Use
+// WithAPIUserAgent to override the separate mobile API request profile.
 func WithUserAgent(ua string) Option {
 	return func(c *Client) {
 		if ua != "" {
@@ -164,12 +173,59 @@ func WithUserAgent(ua string) Option {
 	}
 }
 
-// WithAppID overrides the X-IG-App-ID header. The default (936619743392459)
-// is Instagram Web's registered app ID and works for all documented endpoints.
+// WithAppID overrides X-IG-App-ID for existing web requests. The default
+// (936619743392459) is Instagram Web's registered app ID. Use WithAPIAppID to
+// override the separate mobile API request profile.
 func WithAppID(id string) Option {
 	return func(c *Client) {
 		if id != "" {
 			c.appID = id
+		}
+	}
+}
+
+// WithWWWHost overrides the origin used by existing web endpoints and web
+// GraphQL requests. The default is https://www.instagram.com.
+//
+// This option is primarily useful for private proxies and tests. The value
+// must be an absolute HTTP(S) origin; a trailing slash is ignored.
+func WithWWWHost(host string) Option {
+	return func(c *Client) {
+		if normalized := normalizeHost(host); normalized != "" {
+			c.wwwHost = normalized
+		}
+	}
+}
+
+// WithAPIHost overrides the origin used by explicitly mobile API requests,
+// including the fbsearch SERP endpoints. The default is
+// https://i.instagram.com. Existing web endpoints continue to use the WWW
+// host and the same Client, HTTP transport, and cookie header.
+func WithAPIHost(host string) Option {
+	return func(c *Client) {
+		if normalized := normalizeHost(host); normalized != "" {
+			c.apiHost = normalized
+		}
+	}
+}
+
+// WithAPIUserAgent overrides the Instagram Android User-Agent used on mobile
+// API requests. It does not change the web request profile configured by
+// WithUserAgent.
+func WithAPIUserAgent(ua string) Option {
+	return func(c *Client) {
+		if ua != "" {
+			c.apiUserAgent = ua
+		}
+	}
+}
+
+// WithAPIAppID overrides X-IG-App-ID on mobile API requests. It does not
+// change the web app ID configured by WithAppID.
+func WithAPIAppID(id string) Option {
+	return func(c *Client) {
+		if id != "" {
+			c.apiAppID = id
 		}
 	}
 }
@@ -271,8 +327,12 @@ func New(cookies Cookies, opts ...Option) (*Client, error) {
 			Timeout:       defaultTimeout,
 			CheckRedirect: noFollowRedirect,
 		},
+		wwwHost:       baseURL,
+		apiHost:       defaultAPIHost,
 		userAgent:     defaultUserAgent,
 		appID:         defaultAppID,
+		apiUserAgent:  defaultAPIUserAgent,
+		apiAppID:      defaultAPIAppID,
 		maxRetries:    defaultMaxRetries,
 		retryBase:     defaultRetryBase,
 		minGap:        defaultMinGap,
@@ -297,6 +357,18 @@ func New(cookies Cookies, opts ...Option) (*Client, error) {
 	}
 
 	return c, nil
+}
+
+// normalizeHost accepts origins only. Option functions cannot return errors,
+// so invalid values are ignored in the same way as an invalid WithProxy URL.
+func normalizeHost(host string) string {
+	host = strings.TrimRight(strings.TrimSpace(host), "/")
+	u, err := url.Parse(host)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+		u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return ""
+	}
+	return host
 }
 
 // validateSession fetches the authenticated user.

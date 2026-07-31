@@ -18,6 +18,9 @@ import (
 
 // requestOptions tweaks a single request.
 type requestOptions struct {
+	// Host selects the web or mobile API origin and its matching header profile.
+	// The zero value deliberately remains the web host for compatibility.
+	Host requestHost
 	// IsWrite marks the call as a write action — uses writeGap and is more
 	// strictly classified as soft-blocked when the server redirects.
 	IsWrite bool
@@ -31,6 +34,13 @@ type requestOptions struct {
 	// JSONBody, if non-nil, is sent as application/json.
 	JSONBody any
 }
+
+type requestHost uint8
+
+const (
+	requestHostWWW requestHost = iota
+	requestHostAPI
+)
 
 // doJSON makes a request and decodes a JSON body into out. Pass nil out to
 // discard the body.
@@ -63,8 +73,13 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 		method = http.MethodPost
 	}
 
-	// Build URL
-	u := baseURL + path
+	// Build the URL from the explicitly selected request surface. Existing
+	// callers use the zero-value WWW host; mobile SERP callers opt into API.
+	host := c.wwwHost
+	if opts.Host == requestHostAPI {
+		host = c.apiHost
+	}
+	u := host + path
 	if len(q) > 0 {
 		sep := "?"
 		if strings.Contains(u, "?") {
@@ -142,22 +157,38 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("X-IG-App-ID", c.appID)
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("X-ASBD-ID", "129477")
-	req.Header.Set("X-IG-WWW-Claim", "0")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	if opts.Referer != "" {
-		req.Header.Set("Referer", opts.Referer)
-	} else {
-		req.Header.Set("Referer", baseURL+"/")
+	userAgent := c.userAgent
+	appID := c.appID
+	acceptLanguage := "en-US,en;q=0.9"
+	if opts.Host == requestHostAPI {
+		userAgent = c.apiUserAgent
+		appID = c.apiAppID
+		acceptLanguage = "en-US"
 	}
-	req.Header.Set("Origin", baseURL)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", acceptLanguage)
+	req.Header.Set("X-IG-App-ID", appID)
+	if opts.Host == requestHostAPI {
+		// These are the mobile headers observed on the live fbsearch capture.
+		// Cookie auth was sufficient; do not synthesize a bearer token or web
+		// claim for a browser-minted session.
+		req.Header.Set("X-IG-Capabilities", "3brTv10=")
+		req.Header.Set("X-IG-Connection-Type", "WIFI")
+	} else {
+		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("X-ASBD-ID", "129477")
+		req.Header.Set("X-IG-WWW-Claim", "0")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		if opts.Referer != "" {
+			req.Header.Set("Referer", opts.Referer)
+		} else {
+			req.Header.Set("Referer", c.wwwHost+"/")
+		}
+		req.Header.Set("Origin", c.wwwHost)
+	}
 	req.Header.Set("X-CSRFToken", c.cookies.CSRFToken)
 	if opts.IsWrite {
 		req.Header.Set("X-Instagram-AJAX", "1")
@@ -265,6 +296,12 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
+		// A concrete login_required/session-expired body is stronger evidence
+		// than the ambiguous bare 401/403 that Instagram also uses for soft
+		// throttling on an otherwise validated session.
+		if hasExpiredSessionCue(body) {
+			return body, fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
+		}
 		// 401 from a previously-validated session is almost always rate-limit
 		// behaviour ("require_login":true with no body cue), so trip cooldown.
 		c.validatedMu.Lock()
@@ -290,6 +327,12 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	return body, apiErr
 }
 
+func hasExpiredSessionCue(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "login_required") || strings.Contains(lower, "login required") ||
+		strings.Contains(lower, "require_login") || strings.Contains(lower, "session expired")
+}
+
 func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL string, body []byte, isWrite bool) error {
 	msg := strings.ToLower(shaped.Message)
 	apiErr := &APIError{
@@ -300,6 +343,9 @@ func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL stri
 		Body:       string(body),
 	}
 	switch {
+	case strings.Contains(msg, "login_required") || strings.Contains(msg, "login required") ||
+		strings.Contains(msg, "require_login") || strings.Contains(msg, "session expired"):
+		return fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
 	case strings.Contains(msg, "checkpoint") || strings.Contains(msg, "challenge_required"):
 		return fmt.Errorf("%w: %s", ErrChallengeRequired, apiErr.Error())
 	case strings.Contains(msg, "csrf"):

@@ -23,7 +23,7 @@ func (c *Client) GetHashtag(ctx context.Context, name string) (*Hashtag, error) 
 		Status string          `json:"status"`
 	}
 	if err := c.doJSON(ctx, "GET", "/api/v1/tags/web_info/", q, &requestOptions{
-		Referer: baseURL + "/explore/tags/" + name + "/",
+		Referer: c.wwwHost + "/explore/tags/" + name + "/",
 	}, &resp); err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func (c *Client) hashtagPosts(name, tab string) *Iterator[*Post] {
 		path := "/api/v1/tags/" + url.PathEscape(name) + "/sections/"
 		if err := c.doJSON(ctx, "POST", path, nil, &requestOptions{
 			FormBody: form,
-			Referer:  baseURL + "/explore/tags/" + name + "/",
+			Referer:  c.wwwHost + "/explore/tags/" + name + "/",
 		}, &resp); err != nil {
 			return Page[*Post]{}, err
 		}

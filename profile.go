@@ -25,7 +25,7 @@ func (c *Client) GetProfile(ctx context.Context, username string) (*User, error)
 		Status string `json:"status"`
 	}
 	if err := c.doJSON(ctx, "GET", "/api/v1/users/web_profile_info/", q, &requestOptions{
-		Referer: baseURL + "/" + username + "/",
+		Referer: c.wwwHost + "/" + username + "/",
 	}, &resp); err != nil {
 		return nil, err
 	}
