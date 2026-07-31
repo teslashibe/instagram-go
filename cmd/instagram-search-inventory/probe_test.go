@@ -273,6 +273,63 @@ func TestInspectHARDoesNotLetFailedDuplicateHideSuccessfulCapture(t *testing.T) 
 	}
 }
 
+func TestInspectHARRecognizesCapturedKeywordSearchRelayShape(t *testing.T) {
+	t.Parallel()
+	har := map[string]any{"log": map[string]any{"entries": []any{map[string]any{
+		"request": map[string]any{
+			"method": "POST",
+			"url":    "https://www.instagram.com/graphql/query",
+			"headers": []any{map[string]any{
+				"name":  "x-fb-friendly-name",
+				"value": "PolarisKeywordSearchExplorePageRelayQuery",
+			}},
+			"postData": map[string]any{"params": []any{
+				map[string]any{"name": "doc_id", "value": "26586987494245638"},
+				map[string]any{"name": "variables", "value": `{"after":null,"first":24,"query":"coffee","search_session_id":"search-secret","serp_session_id":"serp-secret"}`},
+			}},
+		},
+		"response": map[string]any{
+			"status":  200,
+			"content": map[string]any{"text": `{"data":{"xdt_viewer":{"user":{"id":"viewer-secret"}},"xdt_fbsearch__top_serp_graphql":{"edges":[{"cursor":null,"node":{"__typename":"XDTTopSerpMediaGridUnit","unit_type":"MEDIA_GRID","items":[{"__typename":"XDTMediaDict","id":"media-secret","pk":"pk-secret","code":"SHORT","media_type":2,"product_type":"clips","user":{"username":"creator"}}]}}],"page_info":{"has_next_page":true,"end_cursor":"cursor-secret"}}},"extensions":{"is_final":true}}`},
+		},
+	}}}}
+	raw, err := json.Marshal(har)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "captured-search.har")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	surfaces, err := inspectHAR(path, "coffee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surfaces) != 1 {
+		t.Fatalf("got %d GraphQL surfaces", len(surfaces))
+	}
+	s := surfaces[0]
+	if s.FriendlyName != "PolarisKeywordSearchExplorePageRelayQuery" || s.DocID != "26586987494245638" {
+		t.Fatalf("unexpected captured operation: %#v", s)
+	}
+	if !strings.Contains(strings.Join(s.MediaPaths, " "), "$.data.xdt_fbsearch__top_serp_graphql.edges[].node.items[]") {
+		t.Fatalf("missing captured media path: %#v", s.MediaPaths)
+	}
+	joinedPagination := strings.Join(s.PaginationFields, " ")
+	if !strings.Contains(joinedPagination, "page_info.has_next_page") || !strings.Contains(joinedPagination, "page_info.end_cursor") {
+		t.Fatalf("missing Relay pagination fields: %#v", s.PaginationFields)
+	}
+	reportText, err := renderReport(report{CapturedAt: time.Now(), Host: "https://i.instagram.com", Query: "coffee", GraphQL: surfaces})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"viewer-secret", "search-secret", "serp-secret", "cursor-secret"} {
+		if strings.Contains(reportText, forbidden) {
+			t.Fatalf("report leaked %q", forbidden)
+		}
+	}
+}
+
 func TestCaptureRejectsHARWithoutSearchDocID(t *testing.T) {
 	t.Parallel()
 	harPath := filepath.Join(t.TempDir(), "empty.har")
