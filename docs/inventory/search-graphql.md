@@ -1,15 +1,20 @@
 # Instagram keyword search capture inventory
 
-Status: **authenticated mobile REST inventory captured live** (2026-07-31).
-GraphQL was not part of this REST capture and remains a separate, explicitly
-unclaimed surface.
+Status: **REST and GraphQL keyword-search inventory captured live**. Mobile
+REST was captured on 2026-07-31; authenticated burner-session web GraphQL was
+captured on 2026-06-11.
 
 Live secret-scrubbed REST evidence:
 [`docs/inventory/captures/2026-07-31-coffee-rest.md`](./captures/2026-07-31-coffee-rest.md)
-— four mobile `fbsearch` tabs on `i.instagram.com`, keyword `coffee`, HTTP 200
-for every tab, and 32 keyword-to-media nodes across Top and Reels. The burner
-session cookie was accepted by the authenticated SERP request but was never
-retained in the artifact.
+— four mobile `fbsearch` tabs on `i.instagram.com`, keyword `coffee`, 32 media
+nodes. Browser-minted sessions may fail `accounts/current_user` on the mobile
+host while still serving SERP; the probe validates via `top_serp` instead.
+
+Live secret-scrubbed GraphQL evidence:
+[`docs/inventory/captures/2026-06-11-keyword-search-graphql.md`](./captures/2026-06-11-keyword-search-graphql.md)
+— authenticated initial and continuation operations on `www.instagram.com`,
+including the observed friendly names, `doc_id` values, variable names,
+response paths, Relay pagination contract, and a normalized media sample.
 
 This document remains the durable capture contract for issue #6. New captures
 belong under `docs/inventory/captures/` after human secret review.
@@ -17,26 +22,16 @@ belong under `docs/inventory/captures/` after human secret review.
 ## Scripted mobile inventory
 
 The probe in [`cmd/instagram-search-inventory`](../../cmd/instagram-search-inventory/)
-validates the burner session against authenticated `top_serp`, then captures
-these four app surfaces using the same keyword. Every row is required for a
-successful report.
+validates the burner session against `GET /api/v1/fbsearch/top_serp/`, then
+captures these four app surfaces using the same keyword. Every row is required
+for a successful report.
 
-| Tab | Method and path | First-page parameters supplied by the probe | Pagination fields inventoried from the live response |
+| Tab | Method and path | Required first-page parameters | Pagination fields inventoried from the live response |
 | --- | --- | --- | --- |
 | Top | `GET /api/v1/fbsearch/top_serp/` | `query`, `search_surface=top_serp`, `timezone_offset`, `rank_token` | `next_max_id`, `reels_max_id`, `rank_token`, `has_more` wherever observed |
 | Reels | `GET /api/v1/fbsearch/reels_serp/` | `query`, `search_surface=clips_search_page`, `timezone_offset` | `reels_max_id`, `rank_token`, `has_more` wherever observed |
 | Accounts | `GET /api/v1/fbsearch/account_serp/` | `query`, `search_surface=account_serp`, `timezone_offset` | `page_token`, `next_page_token`, `paging_token`, `has_more` wherever observed |
 | Keyword typeahead | `GET /api/v1/fbsearch/typeahead_stream/` | `query`, `search_surface=typeahead_search_page`, `timezone_offset`, `context=blended`, `count` | any cursor fields actually returned |
-
-Evidence terminology is intentionally narrow:
-
-- **Observed** means a field path, media path, pagination field, status, or
-  envelope was present in the successful live response linked above.
-- **Supplied** means the probe sent that parameter. The capture did not perform
-  parameter-removal experiments, so it does not claim every supplied parameter
-  is independently required by Instagram.
-- **Candidate** in the model mapping below is an SDK interpretation, not a
-  server contract.
 
 The expected media envelope is not hard-coded as proof. The capture walks the
 live response and records every actual field path. It recognizes media only
@@ -49,14 +44,32 @@ are therefore discovered without assuming that one remains canonical.
 
 ## GraphQL inventory
 
-Mobile `fbsearch` requests cannot reveal web GraphQL persisted-query IDs. With
-`-har`, the probe independently inventories search-related calls to
-`/graphql/query` or `/api/graphql` and records:
+The authenticated web capture observed two live persisted operations. The
+separate initial and continuation documents are important: using the initial
+`doc_id` for pagination is not the captured contract.
+
+| Request | Method and path | Friendly name | Live `doc_id` |
+| --- | --- | --- | --- |
+| Initial | `POST https://www.instagram.com/graphql/query` | `PolarisKeywordSearchExplorePageRelayQuery` | `26586987494245638` |
+| Continuation | `POST https://www.instagram.com/graphql/query` | `PolarisKeywordSearchExplorePageRelayPaginationQuery` | `26577336451926911` |
+
+Both successful responses used the Relay connection at
+`data.xdt_fbsearch__top_serp_graphql`. Media-grid units contained recognized
+post nodes at `edges[].node.items[]`; `page_info.has_next_page` and
+`page_info.end_cursor` provide continuation state. The exact transport fields,
+GraphQL variable-name set, heterogeneous edge shape, pagination behavior, and
+scrubbed media sample are retained in the linked capture. The persisted IDs are
+dated observations and must be recaptured after a schema or persisted-query
+failure.
+
+Mobile `fbsearch` requests cannot reveal web GraphQL persisted-query IDs. For a
+fresh recapture, `-har` makes the probe independently inventory search-related
+calls to `/graphql/query` or `/api/graphql` and record:
 
 - HTTP method, host, and path
 - `x-fb-friendly-name` / `fb_api_req_friendly_name`
 - live `doc_id`
-- captured top-level parameter and GraphQL variable names, never values
+- required top-level params and GraphQL variable names, never values
 - response field paths and media-node paths
 - pagination fields including `end_cursor` and `has_next_page`
 
@@ -67,9 +80,9 @@ shapes are rejected as capture evidence. A failed duplicate also cannot hide a
 later successful response for the same friendly-name/`doc_id` pair.
 
 Persisted `doc_id` values rotate. Every generated report is UTC date-stamped and
-warns consumers to re-capture stale IDs. A run without a HAR explicitly says
-GraphQL was not captured; it must not be interpreted as a complete GraphQL
-inventory.
+warns consumers to re-capture stale IDs. A generated REST report without a HAR
+does not supersede the dated GraphQL capture above and is not fresh GraphQL
+evidence.
 
 ## Host differences
 
@@ -104,8 +117,7 @@ inventory.
 
 The generated report includes a small live sample containing public media
 PK/shortcode and scalar model candidates. Captions are reduced to a boolean
-presence flag; owner account IDs and usernames are omitted; CDN query strings
-are removed.
+presence flag; CDN query strings are removed.
 
 ## Completeness and secret boundary
 

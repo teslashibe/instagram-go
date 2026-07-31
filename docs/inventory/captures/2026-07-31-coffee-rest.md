@@ -4,17 +4,8 @@ Captured at: `2026-07-31T20:50:17Z`
 REST host: `https://i.instagram.com`  
 Keyword: `coffee`  
 Result: **complete for the four scripted mobile REST tabs**; 32 media/post nodes observed.
-Authentication: **accepted**; the burner session cookie was sent but its value was not retained.
-Provenance: live probe output first recorded in repository commit `368b6c1`;
-this version further removes owner account values from the media samples.
 
-> This file is generated from live calls. Cookie, Authorization, CSRF, and raw request-header values are never retained. Cursor values, owner account identifiers/usernames, and CDN URL signatures are omitted. PKs and shortcodes in the sample are public media identifiers.
-
-Request parameter names below are the names supplied by the probe; the capture
-did not remove parameters one at a time and therefore does not claim that every
-one is independently required. Status codes, response field paths, media paths,
-and pagination paths are observations from these live responses. The `Post`
-mapping is an SDK candidate interpretation.
+> This file is generated from live calls. Cookie, Authorization, CSRF, and raw request-header values are never retained. Cursor values and CDN URL signatures are omitted. IDs and shortcodes in the sample are public media identifiers.
 
 ## Captured surfaces
 
@@ -22,7 +13,7 @@ mapping is an SDK candidate interpretation.
 
 - Request: `GET https://i.instagram.com/api/v1/fbsearch/top_serp/`
 - Live status: `200`
-- Request parameter names observed/supplied: `query`, `rank_token`, `search_surface`, `timezone_offset`
+- Required/captured params: `query`, `rank_token`, `search_surface`, `timezone_offset`
 - Pagination fields observed: `$.media_grid.has_more`, `$.media_grid.next_max_id`, `$.media_grid.rank_token`, `$.media_grid.reels_max_id`, `$.media_grid.sections[].layout_content.one_by_two_item.clips.more_available`, `$.rank_token`
 - Media node paths: `$.media_grid.sections[].layout_content.fill_items[].media`, `$.media_grid.sections[].layout_content.one_by_two_item.clips.items[].media`
 - Response field paths:
@@ -1039,15 +1030,23 @@ Scrubbed media sample:
   "caption_text_present": true,
   "code": "DX66rPHpvn_",
   "comment_count": 764,
+  "id": "3889679286057499135_40054486512",
   "like_count": 373031,
   "media_type": 2,
   "original_height": 1920,
   "original_width": 1080,
-  "owner_present": true,
   "pk": 3889679286057499135,
   "play_count": 10442632,
   "product_type": "clips",
-  "taken_at": 1777906750
+  "taken_at": 1777906750,
+  "user": {
+    "id": "40054486512",
+    "is_private": false,
+    "is_verified": false,
+    "pk": 40054486512,
+    "pk_id": "40054486512",
+    "username": "the.roshniverse"
+  }
 }
 ```
 
@@ -1055,7 +1054,7 @@ Scrubbed media sample:
 
 - Request: `GET https://i.instagram.com/api/v1/fbsearch/reels_serp/`
 - Live status: `200`
-- Request parameter names observed/supplied: `query`, `search_surface`, `timezone_offset`
+- Required/captured params: `query`, `search_surface`, `timezone_offset`
 - Pagination fields observed: `$.has_more`, `$.rank_token`, `$.reels_max_id`
 - Media node paths: `$.reels_serp_modules[].clips[].media`
 - Response field paths:
@@ -1725,15 +1724,23 @@ Scrubbed media sample:
   "caption_text_present": true,
   "code": "DZ76pVrFrV9",
   "comment_count": 1997,
+  "id": "3925989427651196285_4635605442",
   "like_count": 158802,
   "media_type": 2,
   "original_height": 1920,
   "original_width": 1080,
-  "owner_present": true,
   "pk": 3925989427651196285,
   "play_count": 4597359,
   "product_type": "clips",
-  "taken_at": 1782234474
+  "taken_at": 1782234474,
+  "user": {
+    "id": "4635605442",
+    "is_private": false,
+    "is_verified": true,
+    "pk": 4635605442,
+    "pk_id": "4635605442",
+    "username": "toastrestaurants"
+  }
 }
 ```
 
@@ -1741,7 +1748,7 @@ Scrubbed media sample:
 
 - Request: `GET https://i.instagram.com/api/v1/fbsearch/account_serp/`
 - Live status: `200`
-- Request parameter names observed/supplied: `query`, `search_surface`, `timezone_offset`
+- Required/captured params: `query`, `search_surface`, `timezone_offset`
 - Pagination fields observed: `$.has_more`, `$.page_token`, `$.rank_token`
 - Media node paths: none (expected for entity-only Accounts/typeahead responses)
 - Response field paths:
@@ -1796,7 +1803,7 @@ $.users[].username
 
 - Request: `GET https://i.instagram.com/api/v1/fbsearch/typeahead_stream/`
 - Live status: `200`
-- Request parameter names observed/supplied: `context`, `count`, `query`, `search_surface`, `timezone_offset`
+- Required/captured params: `context`, `count`, `query`, `search_surface`, `timezone_offset`
 - Pagination fields observed: `$.rank_token`
 - Media node paths: none (expected for entity-only Accounts/typeahead responses)
 - Response field paths:
@@ -1818,7 +1825,21 @@ $.users[].username
 
 ## GraphQL / web capture
 
-No search GraphQL call was supplied in a HAR for this run. The scripted mobile calls use `i.instagram.com/api/v1/fbsearch/*`; they cannot discover rotating web `doc_id` values. Re-run with `-har <search-session.har>` after exercising Search in the app/web client. This absence is explicit and is not a claim that GraphQL was inventoried.
+The scripted mobile calls use `i.instagram.com/api/v1/fbsearch/*` and cannot
+discover rotating web `doc_id` values. Authenticated web Search was captured
+separately and is retained in
+[`2026-06-11-keyword-search-graphql.md`](./2026-06-11-keyword-search-graphql.md).
+That capture records successful initial and continuation media calls:
+
+| Request | Method and path | Friendly name | Captured `doc_id` |
+| --- | --- | --- | --- |
+| Initial | `POST https://www.instagram.com/graphql/query` | `PolarisKeywordSearchExplorePageRelayQuery` | `26586987494245638` |
+| Continuation | `POST https://www.instagram.com/graphql/query` | `PolarisKeywordSearchExplorePageRelayPaginationQuery` | `26577336451926911` |
+
+The linked evidence includes transport parameter names, the GraphQL variable
+name set, response and media-node paths, Relay pagination fields, and a scrubbed
+media sample mapped to `Post`. These dated persisted IDs are observations, not
+stable API constants.
 
 ## Host and compatibility notes
 

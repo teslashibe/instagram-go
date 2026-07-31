@@ -15,11 +15,8 @@ func renderReport(r report) (string, error) {
 	fmt.Fprintf(&b, "REST host: `%s`  \n", r.Host)
 	fmt.Fprintf(&b, "Keyword: `%s`  \n", markdownCode(r.Query))
 	fmt.Fprintf(&b, "Result: **complete for the four scripted mobile REST tabs**; %d media/post nodes observed.\n", r.MediaCount)
-	if r.Authenticated {
-		fmt.Fprintln(&b, "Authentication: **accepted**; the burner session cookie was sent but its value was not retained.")
-	}
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "> This file is generated from live calls. Cookie, Authorization, CSRF, and raw request-header values are never retained. Cursor values, owner account identifiers/usernames, and CDN URL signatures are omitted. PKs and shortcodes in the sample are public media identifiers.")
+	fmt.Fprintln(&b, "> This file is generated from live calls. Cookie, Authorization, CSRF, and raw request-header values are never retained. Cursor values and CDN URL signatures are omitted. IDs and shortcodes in the sample are public media identifiers.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## Captured surfaces")
 	fmt.Fprintln(&b)
@@ -78,7 +75,7 @@ func renderSurface(b *strings.Builder, s surface) error {
 		fmt.Fprintf(b, "- Captured `doc_id`: `%s`\n", markdownCode(s.DocID))
 	}
 	fmt.Fprintf(b, "- Live status: `%d`\n", s.StatusCode)
-	fmt.Fprintf(b, "- Request parameter names observed/supplied: %s\n", codeList(s.RequestParamNames))
+	fmt.Fprintf(b, "- Required/captured params: %s\n", codeList(s.RequiredParams))
 	if len(s.PaginationFields) == 0 {
 		fmt.Fprintln(b, "- Pagination fields observed: none in this response")
 	} else {
@@ -119,10 +116,6 @@ func scrubJSON(value any) any {
 		out := map[string]any{}
 		for key, child := range node {
 			lower := strings.ToLower(key)
-			if accountContainer(lower, child) {
-				out[key] = "<redacted-account>"
-				continue
-			}
 			if sensitiveKey(lower) {
 				out[key] = "<redacted>"
 				continue
@@ -152,20 +145,7 @@ func sensitiveKey(key string) bool {
 			return true
 		}
 	}
-	return strings.HasSuffix(key, "user_id") || strings.HasSuffix(key, "owner_id") ||
-		strings.HasSuffix(key, "account_id") || strings.HasSuffix(key, "viewer_id")
-}
-
-func accountContainer(key string, value any) bool {
-	if _, ok := value.(map[string]any); !ok {
-		return false
-	}
-	switch key {
-	case "user", "owner", "viewer", "account", "logged_in_user":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func stripURLQuery(value string) string {

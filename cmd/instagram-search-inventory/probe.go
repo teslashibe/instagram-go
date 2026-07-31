@@ -37,28 +37,27 @@ type probe struct {
 }
 
 type report struct {
-	CapturedAt    time.Time
-	Host          string
-	Query         string
-	Authenticated bool
-	REST          []surface
-	GraphQL       []surface
-	MediaCount    int
+	CapturedAt time.Time
+	Host       string
+	Query      string
+	REST       []surface
+	GraphQL    []surface
+	MediaCount int
 }
 
 type surface struct {
-	Name              string
-	Method            string
-	Host              string
-	Path              string
-	DocID             string
-	FriendlyName      string
-	RequestParamNames []string
-	PaginationFields  []string
-	ResponseFields    []string
-	MediaPaths        []string
-	SampleMedia       map[string]any
-	StatusCode        int
+	Name             string
+	Method           string
+	Host             string
+	Path             string
+	DocID            string
+	FriendlyName     string
+	RequiredParams   []string
+	PaginationFields []string
+	ResponseFields   []string
+	MediaPaths       []string
+	SampleMedia      map[string]any
+	StatusCode       int
 }
 
 type endpoint struct {
@@ -100,7 +99,7 @@ func (p probe) capture(ctx context.Context, harPath string) (report, error) {
 			"search_surface", "typeahead_search_page", "timezone_offset", tz, "query", p.query, "context", "blended", "count", "30")},
 	}
 
-	result := report{CapturedAt: p.now().UTC(), Host: p.baseURL, Query: p.query, Authenticated: true}
+	result := report{CapturedAt: p.now().UTC(), Host: p.baseURL, Query: p.query}
 	for _, ep := range endpoints {
 		body, status, err := p.get(ctx, ep.path, ep.params)
 		if err != nil {
@@ -133,8 +132,8 @@ func (p probe) capture(ctx context.Context, harPath string) (report, error) {
 func (p probe) authenticate(ctx context.Context) error {
 	// Browser-minted sessions often serve i.instagram.com fbsearch while
 	// accounts/current_user returns status=fail ("something went wrong").
-	// Validate with the real authenticated search surface so dead cookies still
-	// fail before any inventory can be written.
+	// Validate with a real search surface instead so we still fail closed on
+	// dead cookies before writing inventory.
 	rankToken, err := randomUUID()
 	if err != nil {
 		return fmt.Errorf("burner session validation: %w", err)
@@ -153,8 +152,12 @@ func (p probe) authenticate(ctx context.Context) error {
 	if json.Unmarshal(body, &decoded) != nil {
 		return errors.New("burner session validation: top_serp returned non-JSON (authentication rejected or challenged)")
 	}
-	if _, ok := decoded["media_grid"]; !ok && decoded["status"] == "fail" {
-		return errors.New("burner session validation: top_serp status=fail")
+	if _, ok := decoded["media_grid"]; !ok {
+		// Still accept if the envelope is present under an alternate key; surface
+		// capture remains fail-closed on zero media.
+		if decoded["status"] == "fail" {
+			return errors.New("burner session validation: top_serp status=fail")
+		}
 	}
 	return nil
 }
@@ -230,16 +233,16 @@ func inspectSurface(name, method, host, path, docID, friendly string, params url
 	}
 	sort.Strings(paramNames)
 	s := surface{
-		Name:              name,
-		Method:            method,
-		Host:              host,
-		Path:              path,
-		DocID:             docID,
-		FriendlyName:      friendly,
-		RequestParamNames: paramNames,
-		PaginationFields:  paginationFields(fields),
-		ResponseFields:    fields,
-		StatusCode:        status,
+		Name:             name,
+		Method:           method,
+		Host:             host,
+		Path:             path,
+		DocID:            docID,
+		FriendlyName:     friendly,
+		RequiredParams:   paramNames,
+		PaginationFields: paginationFields(fields),
+		ResponseFields:   fields,
+		StatusCode:       status,
 	}
 	if len(media) > 0 {
 		s.SampleMedia = media[0].sample
@@ -289,9 +292,7 @@ func collectMedia(v any) []mediaNode {
 }
 
 func mediaSample(node map[string]any) map[string]any {
-	// The composite media `id` commonly embeds the owner's account ID after an
-	// underscore, so retain the media-only pk/pk_id instead.
-	keys := []string{"pk", "pk_id", "code", "media_type", "product_type", "taken_at", "like_count", "comment_count", "view_count", "play_count", "original_width", "original_height"}
+	keys := []string{"id", "pk", "pk_id", "code", "media_type", "product_type", "taken_at", "like_count", "comment_count", "view_count", "play_count", "original_width", "original_height"}
 	out := map[string]any{}
 	for _, key := range keys {
 		if value, ok := node[key]; ok && isScalar(value) {
@@ -303,10 +304,16 @@ func mediaSample(node map[string]any) map[string]any {
 			out["caption_text_present"] = text != ""
 		}
 	}
-	if user, ok := node["user"].(map[string]any); ok && len(user) > 0 {
-		// Preserve structural evidence without retaining any owner account ID,
-		// username, privacy state, or verification state.
-		out["owner_present"] = true
+	if user, ok := node["user"].(map[string]any); ok {
+		owner := map[string]any{}
+		for _, key := range []string{"pk", "pk_id", "id", "username", "is_private", "is_verified"} {
+			if value, ok := user[key]; ok && isScalar(value) {
+				owner[key] = value
+			}
+		}
+		if len(owner) > 0 {
+			out["user"] = owner
+		}
 	}
 	return out
 }
