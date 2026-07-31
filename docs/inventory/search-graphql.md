@@ -1,28 +1,42 @@
 # Instagram keyword search capture inventory
 
-Status: **probe implemented; live artifact pending an authenticated burner
-session and, for GraphQL, an operator-supplied Search HAR**.
+Status: **authenticated mobile REST inventory captured live** (2026-07-31).
+GraphQL was not part of this REST capture and remains a separate, explicitly
+unclaimed surface.
 
-This document is the durable capture contract for issue #6. It deliberately
-does not claim a live result in this repository: no operator-supplied session
-cookie or reachable social-login sidecar was available for this implementation
-run, so authentication could not be completed without inventing evidence.
-Successful date-stamped output from the probe belongs under
-`docs/inventory/captures/` after human secret review.
+Live secret-scrubbed REST evidence:
+[`docs/inventory/captures/2026-07-31-coffee-rest.md`](./captures/2026-07-31-coffee-rest.md)
+— four mobile `fbsearch` tabs on `i.instagram.com`, keyword `coffee`, HTTP 200
+for every tab, and 32 keyword-to-media nodes across Top and Reels. The burner
+session cookie was accepted by the authenticated SERP request but was never
+retained in the artifact.
+
+This document remains the durable capture contract for issue #6. New captures
+belong under `docs/inventory/captures/` after human secret review.
 
 ## Scripted mobile inventory
 
 The probe in [`cmd/instagram-search-inventory`](../../cmd/instagram-search-inventory/)
-authenticates first with `GET /api/v1/accounts/current_user/?edit=true`, then
-captures these four app surfaces using the same keyword. Every row is required
-for a successful report.
+validates the burner session against authenticated `top_serp`, then captures
+these four app surfaces using the same keyword. Every row is required for a
+successful report.
 
-| Tab | Method and path | Required first-page parameters | Pagination fields inventoried from the live response |
+| Tab | Method and path | First-page parameters supplied by the probe | Pagination fields inventoried from the live response |
 | --- | --- | --- | --- |
 | Top | `GET /api/v1/fbsearch/top_serp/` | `query`, `search_surface=top_serp`, `timezone_offset`, `rank_token` | `next_max_id`, `reels_max_id`, `rank_token`, `has_more` wherever observed |
 | Reels | `GET /api/v1/fbsearch/reels_serp/` | `query`, `search_surface=clips_search_page`, `timezone_offset` | `reels_max_id`, `rank_token`, `has_more` wherever observed |
 | Accounts | `GET /api/v1/fbsearch/account_serp/` | `query`, `search_surface=account_serp`, `timezone_offset` | `page_token`, `next_page_token`, `paging_token`, `has_more` wherever observed |
 | Keyword typeahead | `GET /api/v1/fbsearch/typeahead_stream/` | `query`, `search_surface=typeahead_search_page`, `timezone_offset`, `context=blended`, `count` | any cursor fields actually returned |
+
+Evidence terminology is intentionally narrow:
+
+- **Observed** means a field path, media path, pagination field, status, or
+  envelope was present in the successful live response linked above.
+- **Supplied** means the probe sent that parameter. The capture did not perform
+  parameter-removal experiments, so it does not claim every supplied parameter
+  is independently required by Instagram.
+- **Candidate** in the model mapping below is an SDK interpretation, not a
+  server contract.
 
 The expected media envelope is not hard-coded as proof. The capture walks the
 live response and records every actual field path. It recognizes media only
@@ -42,7 +56,7 @@ Mobile `fbsearch` requests cannot reveal web GraphQL persisted-query IDs. With
 - HTTP method, host, and path
 - `x-fb-friendly-name` / `fb_api_req_friendly_name`
 - live `doc_id`
-- required top-level params and GraphQL variable names, never values
+- captured top-level parameter and GraphQL variable names, never values
 - response field paths and media-node paths
 - pagination fields including `end_cursor` and `has_next_page`
 
@@ -90,7 +104,8 @@ inventory.
 
 The generated report includes a small live sample containing public media
 PK/shortcode and scalar model candidates. Captions are reduced to a boolean
-presence flag; CDN query strings are removed.
+presence flag; owner account IDs and usernames are omitted; CDN query strings
+are removed.
 
 ## Completeness and secret boundary
 

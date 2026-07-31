@@ -63,12 +63,12 @@ func TestCaptureRequiresAllTabsAndMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{secret, "csrf-secret", "cursor-secret", "rank-secret"} {
+	for _, forbidden := range []string{secret, "csrf-secret", "cursor-secret", "rank-secret", "creator"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Fatalf("report leaked %q", forbidden)
 		}
 	}
-	for _, expected := range []string{"Top", "Reels", "Accounts", "Keyword typeahead", "`Post.PK`", "$.media_grid.next_max_id"} {
+	for _, expected := range []string{"Top", "Reels", "Accounts", "Keyword typeahead", "`Post.PK`", "$.media_grid.next_max_id", "Authentication: **accepted**", "\"owner_present\": true", "Request parameter names observed/supplied"} {
 		if !strings.Contains(rendered, expected) {
 			t.Fatalf("report missing %q", expected)
 		}
@@ -171,7 +171,7 @@ func TestInspectHARCapturesSearchDocIDWithoutHeadersOrValues(t *testing.T) {
 	if s.DocID != "987654321" || s.FriendlyName != "PolarisKeywordSearchQuery" {
 		t.Fatalf("unexpected GraphQL identity: %#v", s)
 	}
-	joined := strings.Join(s.RequiredParams, " ")
+	joined := strings.Join(s.RequestParamNames, " ")
 	if !strings.Contains(joined, "variables.after") || strings.Contains(joined, "cursor-secret") {
 		t.Fatalf("variables were not name-only: %s", joined)
 	}
@@ -183,6 +183,24 @@ func TestInspectHARCapturesSearchDocIDWithoutHeadersOrValues(t *testing.T) {
 		if strings.Contains(reportText, forbidden) {
 			t.Fatalf("report leaked %q", forbidden)
 		}
+	}
+}
+
+func TestScrubJSONRedactsAccountContainersAndIdentifiers(t *testing.T) {
+	t.Parallel()
+	scrubbed := scrubJSON(map[string]any{
+		"pk": "public-media-id",
+		"user": map[string]any{
+			"pk":       "private-owner-id",
+			"username": "private-owner-name",
+		},
+		"caption_user_id": "private-caption-owner-id",
+	}).(map[string]any)
+	if scrubbed["pk"] != "public-media-id" {
+		t.Fatalf("public media identifier was unexpectedly scrubbed: %#v", scrubbed)
+	}
+	if scrubbed["user"] != "<redacted-account>" || scrubbed["caption_user_id"] != "<redacted>" {
+		t.Fatalf("account identifiers were not scrubbed: %#v", scrubbed)
 	}
 }
 
