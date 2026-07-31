@@ -35,15 +35,17 @@ retry policy, cooldown circuit breaker, and auth/error sentinels.
 - [x] Mobile Accounts SERP — `SearchAccounts(ctx, query)` maps account cards,
   page/rank tokens, friendship status, and search social context.
 - [x] Mobile keyword typeahead — `SearchTypeaheadUsers(ctx, query, count)` maps
-  its account suggestions and rank token.
+  its account suggestions and rank token; `KeywordTypeahead(ctx, query)` exposes
+  those lightweight entities as suggestion strings.
+- [x] Mobile Reels REST (`fbsearch/reels_serp`) — `SearchReels(query)` maps the
+  captured `reels_serp_modules[].clips[].media` nodes through the shared `Post`
+  parser. It remains first-page-only until a continuation request is captured.
 
 ### Deferred
 
 - [ ] Mobile Top REST (`fbsearch/top_serp`) — deferred as duplicate media
   coverage; the typed GraphQL iterator has a proven continuation contract and
   avoids introducing a second `SearchPosts`-style API in this slice.
-- [ ] Mobile Reels REST (`fbsearch/reels_serp`) — deferred as duplicate media
-  coverage; its next-page request parameter contract was not observed.
 - [ ] Related-keyword / SERP-filter GraphQL — deferred because the inventory
   contains no successful persisted operation for either surface.
 - [ ] Dedicated sound/audio search — deferred because no sound-search request

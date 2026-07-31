@@ -62,6 +62,8 @@ func TestDiscoveryMethodsHonorConfiguredHostsAndRequestProfiles(t *testing.T) {
 		switch req.URL.Path {
 		case "/graphql/query":
 			return jsonResponse(req, http.StatusOK, []byte(`{"data":{"xdt_fbsearch__top_serp_graphql":{"edges":[],"page_info":{"has_next_page":false,"end_cursor":""}}}}`)), nil
+		case "/api/v1/fbsearch/reels_serp/":
+			return jsonResponse(req, http.StatusOK, []byte(`{"reels_serp_modules":[],"status":"ok"}`)), nil
 		case "/api/v1/fbsearch/account_serp/", "/api/v1/fbsearch/typeahead_stream/":
 			return jsonResponse(req, http.StatusOK, []byte(`{"users":[],"status":"ok"}`)), nil
 		default:
@@ -78,14 +80,20 @@ func TestDiscoveryMethodsHonorConfiguredHostsAndRequestProfiles(t *testing.T) {
 	if _, err := c.SearchKeywordPosts("coffee").Collect(context.Background()); err != nil {
 		t.Fatalf("SearchKeywordPosts: %v", err)
 	}
+	if _, err := c.SearchReels("coffee").Collect(context.Background()); err != nil {
+		t.Fatalf("SearchReels: %v", err)
+	}
 	if _, err := c.SearchAccounts(context.Background(), "coffee"); err != nil {
 		t.Fatalf("SearchAccounts: %v", err)
 	}
 	if _, err := c.SearchTypeaheadUsers(context.Background(), "coffee", 5); err != nil {
 		t.Fatalf("SearchTypeaheadUsers: %v", err)
 	}
-	if len(records) != 3 {
-		t.Fatalf("recorded %d requests, want 3", len(records))
+	if _, err := c.KeywordTypeahead(context.Background(), "coffee"); err != nil {
+		t.Fatalf("KeywordTypeahead: %v", err)
+	}
+	if len(records) != 5 {
+		t.Fatalf("recorded %d requests, want 5", len(records))
 	}
 
 	graphql := records[0]
@@ -117,6 +125,46 @@ func TestDiscoveryMethodsHonorConfiguredHostsAndRequestProfiles(t *testing.T) {
 				t.Errorf("%s %s = %q, want empty", mobile.path, name, got)
 			}
 		}
+	}
+}
+
+func TestSearchReelsMapsFixtureAndMobileContract(t *testing.T) {
+	body := fixture(t, "reels_serp_response.json")
+	var requests int
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		q := req.URL.Query()
+		if req.Method != http.MethodGet || req.URL.Host != "i.instagram.com" || req.URL.Path != "/api/v1/fbsearch/reels_serp/" {
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		if q.Get("query") != "coffee" || q.Get("search_surface") != "clips_search_page" || q.Get("timezone_offset") == "" {
+			t.Errorf("unexpected query: %s", req.URL.RawQuery)
+		}
+		if q.Get("max_id") != "" || q.Get("reels_max_id") != "" || q.Get("rank_token") != "" {
+			t.Errorf("sent unproven pagination parameters: %s", req.URL.RawQuery)
+		}
+		return jsonResponse(req, http.StatusOK, body), nil
+	})
+
+	posts, err := c.SearchReels(" coffee ").Collect(context.Background())
+	if err != nil {
+		t.Fatalf("SearchReels: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("got %d requests, want one inventory-proven page", requests)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("got %d posts, want 1", len(posts))
+	}
+	post := posts[0]
+	if post.PK != "REEL_MEDIA_PK_REDACTED" || post.Code != "REEL_SHORTCODE_REDACTED" || post.MediaType != instagram.MediaTypeVideo || post.ProductType != "clips" {
+		t.Fatalf("unexpected reel mapping: %#v", post)
+	}
+	if post.Owner == nil || post.Owner.Username != "coffee_reel_creator_redacted" || post.PlayCount != 123 || len(post.VideoVersions) != 1 {
+		t.Fatalf("missing rich reel fields: %#v", post)
+	}
+	if post.PermalinkURL != "https://www.instagram.com/reel/REEL_SHORTCODE_REDACTED/" {
+		t.Fatalf("reel permalink = %q", post.PermalinkURL)
 	}
 }
 
@@ -363,6 +411,32 @@ func TestSearchTypeaheadUsersMapsFixtureAndDefaultsCount(t *testing.T) {
 	}
 }
 
+func TestKeywordTypeaheadReturnsSuggestionStrings(t *testing.T) {
+	body := []byte(`{
+		"users": [
+			{"pk":"1","username":"CoffeeDaily","full_name":"Coffee Daily"},
+			{"pk":"2","username":"coffeedaily","full_name":"Duplicate"},
+			{"pk":"3","full_name":"Coffee Roasters"}
+		],
+		"status":"ok"
+	}`)
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/v1/fbsearch/typeahead_stream/" || req.URL.Query().Get("count") != "30" {
+			t.Errorf("unexpected request: %s", req.URL.String())
+		}
+		return jsonResponse(req, http.StatusOK, body), nil
+	})
+
+	suggestions, err := c.KeywordTypeahead(context.Background(), " cof ")
+	if err != nil {
+		t.Fatalf("KeywordTypeahead: %v", err)
+	}
+	want := []string{"CoffeeDaily", "Coffee Roasters"}
+	if !reflect.DeepEqual(suggestions, want) {
+		t.Fatalf("suggestions = %#v, want %#v", suggestions, want)
+	}
+}
+
 func TestDiscoveryMethodsReturnExistingAuthSentinels(t *testing.T) {
 	methods := []struct {
 		name string
@@ -373,12 +447,21 @@ func TestDiscoveryMethodsReturnExistingAuthSentinels(t *testing.T) {
 			it.Next(context.Background())
 			return it.Err()
 		}},
+		{name: "reels", call: func(c *instagram.Client) error {
+			it := c.SearchReels("coffee")
+			it.Next(context.Background())
+			return it.Err()
+		}},
 		{name: "accounts", call: func(c *instagram.Client) error {
 			_, err := c.SearchAccounts(context.Background(), "coffee")
 			return err
 		}},
 		{name: "typeahead", call: func(c *instagram.Client) error {
 			_, err := c.SearchTypeaheadUsers(context.Background(), "coffee", 10)
+			return err
+		}},
+		{name: "keyword typeahead", call: func(c *instagram.Client) error {
+			_, err := c.KeywordTypeahead(context.Background(), "coffee")
 			return err
 		}},
 	}
@@ -420,12 +503,21 @@ func TestDiscoveryMethodsParticipateInReadRateLimit(t *testing.T) {
 			it.Next(context.Background())
 			return it.Err()
 		}},
+		{name: "reels", call: func(c *instagram.Client) error {
+			it := c.SearchReels("coffee")
+			it.Next(context.Background())
+			return it.Err()
+		}},
 		{name: "accounts", call: func(c *instagram.Client) error {
 			_, err := c.SearchAccounts(context.Background(), "coffee")
 			return err
 		}},
 		{name: "typeahead", call: func(c *instagram.Client) error {
 			_, err := c.SearchTypeaheadUsers(context.Background(), "coffee", 10)
+			return err
+		}},
+		{name: "keyword typeahead", call: func(c *instagram.Client) error {
+			_, err := c.KeywordTypeahead(context.Background(), "coffee")
 			return err
 		}},
 	}
@@ -470,7 +562,14 @@ func TestDiscoveryMethodsValidateQueriesWithoutHTTP(t *testing.T) {
 	if _, err := c.SearchAccounts(context.Background(), ""); err == nil {
 		t.Fatal("SearchAccounts accepted empty query")
 	}
+	reels := c.SearchReels("  ")
+	if reels.Next(context.Background()) || reels.Err() == nil {
+		t.Fatalf("SearchReels empty query error = %v", reels.Err())
+	}
 	if _, err := c.SearchTypeaheadUsers(context.Background(), "", 1); err == nil {
 		t.Fatal("SearchTypeaheadUsers accepted empty query")
+	}
+	if _, err := c.KeywordTypeahead(context.Background(), "  "); err == nil {
+		t.Fatal("KeywordTypeahead accepted empty query")
 	}
 }
