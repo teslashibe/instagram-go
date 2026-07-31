@@ -25,20 +25,99 @@ func (fn discoveryRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, e
 	return fn(req)
 }
 
-func newDiscoveryClient(t *testing.T, fn discoveryRoundTripFunc) *instagram.Client {
+func newDiscoveryClient(t *testing.T, fn discoveryRoundTripFunc, opts ...instagram.Option) *instagram.Client {
 	t.Helper()
-	c, err := instagram.New(instagram.Cookies{
-		SessionID: "session", CSRFToken: "csrf", DSUserID: "viewer",
-	},
+	options := []instagram.Option{
 		instagram.WithHTTPClient(&http.Client{Transport: fn}),
 		instagram.WithSkipSessionValidation(),
 		instagram.WithMinRequestGap(0),
 		instagram.WithRetry(1, 0),
-	)
+	}
+	options = append(options, opts...)
+	c, err := instagram.New(instagram.Cookies{
+		SessionID: "session", CSRFToken: "csrf", DSUserID: "viewer",
+	}, options...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return c
+}
+
+func TestDiscoveryMethodsHonorConfiguredHostsAndRequestProfiles(t *testing.T) {
+	const (
+		wwwHost = "https://web-proxy.instagram.test"
+		apiHost = "https://mobile-proxy.instagram.test"
+	)
+	type requestRecord struct {
+		host    string
+		path    string
+		header  http.Header
+		referer string
+	}
+	var records []requestRecord
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		records = append(records, requestRecord{
+			host: req.URL.Host, path: req.URL.Path, header: req.Header.Clone(), referer: req.Referer(),
+		})
+		switch req.URL.Path {
+		case "/graphql/query":
+			return jsonResponse(req, http.StatusOK, []byte(`{"data":{"xdt_fbsearch__top_serp_graphql":{"edges":[],"page_info":{"has_next_page":false,"end_cursor":""}}}}`)), nil
+		case "/api/v1/fbsearch/account_serp/", "/api/v1/fbsearch/typeahead_stream/":
+			return jsonResponse(req, http.StatusOK, []byte(`{"users":[],"status":"ok"}`)), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	},
+		instagram.WithWWWHost(wwwHost),
+		instagram.WithAPIHost(apiHost),
+		instagram.WithAPIUserAgent("configured-mobile-ua"),
+		instagram.WithAPIAppID("configured-mobile-app"),
+	)
+
+	if _, err := c.SearchKeywordPosts("coffee").Collect(context.Background()); err != nil {
+		t.Fatalf("SearchKeywordPosts: %v", err)
+	}
+	if _, err := c.SearchAccounts(context.Background(), "coffee"); err != nil {
+		t.Fatalf("SearchAccounts: %v", err)
+	}
+	if _, err := c.SearchTypeaheadUsers(context.Background(), "coffee", 5); err != nil {
+		t.Fatalf("SearchTypeaheadUsers: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("recorded %d requests, want 3", len(records))
+	}
+
+	graphql := records[0]
+	if graphql.host != "web-proxy.instagram.test" || graphql.path != "/graphql/query" {
+		t.Errorf("GraphQL route = %s%s", graphql.host, graphql.path)
+	}
+	if want := wwwHost + "/explore/search/keyword/?q=coffee"; graphql.referer != want {
+		t.Errorf("GraphQL Referer = %q, want %q", graphql.referer, want)
+	}
+	if got := graphql.header.Get("Origin"); got != wwwHost {
+		t.Errorf("GraphQL Origin = %q, want %q", got, wwwHost)
+	}
+
+	for _, mobile := range records[1:] {
+		if mobile.host != "mobile-proxy.instagram.test" {
+			t.Errorf("mobile route = %s%s", mobile.host, mobile.path)
+		}
+		if got := mobile.header.Get("User-Agent"); got != "configured-mobile-ua" {
+			t.Errorf("%s User-Agent = %q", mobile.path, got)
+		}
+		if got := mobile.header.Get("X-IG-App-ID"); got != "configured-mobile-app" {
+			t.Errorf("%s X-IG-App-ID = %q", mobile.path, got)
+		}
+		if got := mobile.header.Get("X-IG-Capabilities"); got != "3brTv10=" {
+			t.Errorf("%s X-IG-Capabilities = %q", mobile.path, got)
+		}
+		for _, name := range []string{"Origin", "Referer", "X-IG-WWW-Claim", "X-Requested-With"} {
+			if got := mobile.header.Get(name); got != "" {
+				t.Errorf("%s %s = %q, want empty", mobile.path, name, got)
+			}
+		}
+	}
 }
 
 func fixture(t *testing.T, name string) []byte {

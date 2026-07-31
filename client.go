@@ -33,10 +33,6 @@ type requestOptions struct {
 	FormBody url.Values
 	// JSONBody, if non-nil, is sent as application/json.
 	JSONBody any
-	// BaseURL overrides the request host. Discovery endpoints captured from the
-	// mobile API use i.instagram.com while the rest of the SDK defaults to the
-	// web host.
-	BaseURL string
 }
 
 type requestHost uint8
@@ -77,7 +73,6 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 		method = http.MethodPost
 	}
 
-	// BaseURL (discovery wrappers) wins; otherwise Host selects www vs API.
 	requestBaseURL := c.requestBaseURL(opts)
 	u := requestBaseURL + path
 	if len(q) > 0 {
@@ -136,9 +131,6 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 }
 
 func (c *Client) requestBaseURL(opts *requestOptions) string {
-	if opts != nil && opts.BaseURL != "" {
-		return strings.TrimRight(opts.BaseURL, "/")
-	}
 	if opts != nil && opts.Host == requestHostAPI {
 		return c.apiHost
 	}
@@ -146,20 +138,6 @@ func (c *Client) requestBaseURL(opts *requestOptions) string {
 		return c.wwwHost
 	}
 	return baseURL
-}
-
-func (c *Client) usesAPIRequestProfile(opts *requestOptions, requestBaseURL string) bool {
-	if opts != nil && opts.Host == requestHostAPI {
-		return true
-	}
-	if requestBaseURL == "" {
-		return false
-	}
-	apiHost := c.apiHost
-	if apiHost == "" {
-		apiHost = defaultAPIHost
-	}
-	return strings.TrimRight(requestBaseURL, "/") == strings.TrimRight(apiHost, "/")
 }
 
 func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts *requestOptions) (*http.Request, error) {
@@ -185,7 +163,7 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 	}
 
 	requestBaseURL := c.requestBaseURL(opts)
-	useAPIProfile := c.usesAPIRequestProfile(opts, requestBaseURL)
+	useAPIProfile := opts.Host == requestHostAPI
 
 	userAgent := c.userAgent
 	appID := c.appID
