@@ -57,8 +57,9 @@ entries cannot establish a captured GraphQL search surface.
 - Missing credentials: exits before making requests or creating output.
 - Invalid/challenged session: reports authentication rejection and creates no
   output.
-- Missing tab or no post media: reports the failed surface and creates no
-  output, rather than labeling a partial capture complete.
+- Missing tab, or no post media in either Top or Reels: reports the failed
+  surface and creates no output, rather than labeling a partial capture
+  complete.
 - Malformed HAR: rejects the entire report and creates no output.
 
 GraphQL calls cannot be discovered from the scripted mobile REST requests. A

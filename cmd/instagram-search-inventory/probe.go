@@ -100,7 +100,6 @@ func (p probe) capture(ctx context.Context, harPath string) (report, error) {
 	}
 
 	result := report{CapturedAt: p.now().UTC(), Host: p.baseURL, Query: p.query}
-	restMediaCount := 0
 	for _, ep := range endpoints {
 		body, status, err := p.get(ctx, ep.path, ep.params)
 		if err != nil {
@@ -112,14 +111,11 @@ func (p probe) capture(ctx context.Context, harPath string) (report, error) {
 		}
 		result.REST = append(result.REST, s)
 		result.MediaCount += count
-		if ep.name == "Top" || ep.name == "Reels" {
-			restMediaCount += count
+		if (ep.name == "Top" || ep.name == "Reels") && count == 0 {
+			return report{}, fmt.Errorf("%s returned no media/post nodes; refusing to claim a complete inventory", ep.name)
 		}
 	}
 
-	if restMediaCount == 0 {
-		return report{}, errors.New("Top/Reels returned no media/post nodes; refusing to claim a complete inventory")
-	}
 	if harPath != "" {
 		gql, err := inspectHAR(harPath, p.query)
 		if err != nil {

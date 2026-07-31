@@ -96,9 +96,9 @@ presence flag; CDN query strings are removed.
 
 A capture is labeled complete for mobile REST only after session validation,
 HTTP success for Top/Reels/Accounts/typeahead, valid JSON for every surface, and
-at least one media/post node. Any missing or invalid credential, challenge,
-checkpoint, rejected tab, malformed response, missing media, or malformed HAR
-aborts before the destination is created.
+at least one media/post node in each of Top and Reels. Any missing or invalid
+credential, challenge, checkpoint, rejected tab, malformed response, missing
+media, or malformed HAR aborts before the destination is created.
 
 The command never serializes Cookie, `sessionid`, password, Authorization,
 CSRF, access-token, raw header, cursor value, or full raw response data. Source

@@ -32,7 +32,7 @@ func TestCaptureRequiresAllTabsAndMedia(t *testing.T) {
 		case "/api/v1/fbsearch/top_serp/":
 			body = `{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"123","id":"123_9","code":"ABC123","media_type":1,"product_type":"feed","taken_at":1700000000,"caption":{"text":"public caption"},"user":{"pk":"9","username":"creator"}}}]}}],"has_more":true,"next_max_id":"cursor-secret","rank_token":"rank-secret"},"status":"ok"}`
 		case "/api/v1/fbsearch/reels_serp/":
-			body = `{"media_grid":{"sections":[],"has_more":false,"reels_max_id":"reel-cursor"},"status":"ok"}`
+			body = `{"media_grid":{"sections":[{"layout_content":{"medias":[{"media":{"pk":"124","id":"124_9","code":"REEL124","media_type":2,"product_type":"clips","taken_at":1700000001,"user":{"pk":"9","username":"creator"}}}]}}],"has_more":false,"reels_max_id":"reel-cursor"},"status":"ok"}`
 		case "/api/v1/fbsearch/account_serp/":
 			body = `{"users":[{"pk":"9","username":"creator"}],"has_more":false,"next_page_token":null,"status":"ok"}`
 		case "/api/v1/fbsearch/typeahead_stream/":
@@ -56,7 +56,7 @@ func TestCaptureRequiresAllTabsAndMedia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.REST) != 4 || report.MediaCount != 1 {
+	if len(report.REST) != 4 || report.MediaCount != 2 {
 		t.Fatalf("got %d surfaces and %d media", len(report.REST), report.MediaCount)
 	}
 	rendered, err := renderReport(report)
@@ -75,18 +75,36 @@ func TestCaptureRequiresAllTabsAndMedia(t *testing.T) {
 	}
 }
 
-func TestCaptureFailsClosedWithoutMedia(t *testing.T) {
+func TestCaptureFailsClosedWhenEitherMediaTabHasNoMedia(t *testing.T) {
 	t.Parallel()
-	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path == "/api/v1/accounts/current_user/" {
-			return jsonResponse(http.StatusOK, `{"user":{"pk":"1"},"status":"ok"}`), nil
-		}
-		return jsonResponse(http.StatusOK, `{"status":"ok","users":[]}`), nil
-	})}
-	p := probe{baseURL: "https://i.instagram.test", query: "nothing", cookies: cookieSet{"sessionid": "secret"}, httpClient: client}
-	_, err := p.capture(context.Background(), "")
-	if err == nil || !strings.Contains(err.Error(), "no media/post nodes") {
-		t.Fatalf("expected no-media failure, got %v", err)
+	for _, emptyTab := range []string{"Top", "Reels"} {
+		emptyTab := emptyTab
+		t.Run(emptyTab, func(t *testing.T) {
+			t.Parallel()
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/api/v1/accounts/current_user/":
+					return jsonResponse(http.StatusOK, `{"user":{"pk":"1"},"status":"ok"}`), nil
+				case "/api/v1/fbsearch/top_serp/":
+					if emptyTab == "Top" {
+						return jsonResponse(http.StatusOK, `{"media_grid":{"sections":[]},"status":"ok"}`), nil
+					}
+					return jsonResponse(http.StatusOK, `{"media":{"pk":"2","code":"TOP","media_type":1},"status":"ok"}`), nil
+				case "/api/v1/fbsearch/reels_serp/":
+					if emptyTab == "Reels" {
+						return jsonResponse(http.StatusOK, `{"media_grid":{"sections":[]},"status":"ok"}`), nil
+					}
+					return jsonResponse(http.StatusOK, `{"media":{"pk":"3","code":"REEL","media_type":2},"status":"ok"}`), nil
+				default:
+					return jsonResponse(http.StatusOK, `{"status":"ok","users":[]}`), nil
+				}
+			})}
+			p := probe{baseURL: "https://i.instagram.test", query: "nothing", cookies: cookieSet{"sessionid": "secret"}, httpClient: client}
+			_, err := p.capture(context.Background(), "")
+			if err == nil || !strings.Contains(err.Error(), emptyTab+" returned no media/post nodes") {
+				t.Fatalf("expected %s no-media failure, got %v", emptyTab, err)
+			}
+		})
 	}
 }
 
