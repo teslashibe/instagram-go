@@ -168,6 +168,93 @@ func TestInspectHARCapturesSearchDocIDWithoutHeadersOrValues(t *testing.T) {
 	}
 }
 
+func TestInspectHARRejectsUnusableGraphQLCalls(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		status   int
+		response string
+		want     string
+	}{
+		{
+			name:     "non-success status",
+			status:   http.StatusInternalServerError,
+			response: `{"errors":[{"message":"upstream failure"}]}`,
+			want:     "HTTP 500",
+		},
+		{
+			name:     "error-only response",
+			status:   http.StatusOK,
+			response: `{"errors":[{"message":"persisted query not found"}]}`,
+			want:     "no usable data",
+		},
+		{
+			name:     "data without media",
+			status:   http.StatusOK,
+			response: `{"data":{"search":{"users":[{"id":"1","username":"account"}]}}}`,
+			want:     "no media/post node",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			har := map[string]any{"log": map[string]any{"entries": []any{map[string]any{
+				"request": map[string]any{
+					"method": "POST",
+					"url":    "https://www.instagram.com/graphql/query?doc_id=987654321&fb_api_req_friendly_name=PolarisKeywordSearchQuery",
+				},
+				"response": map[string]any{"status": tt.status, "content": map[string]any{"text": tt.response}},
+			}}}}
+			raw, err := json.Marshal(har)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "search.har")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			surfaces, err := inspectHAR(path, "coffee")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q rejection, got surfaces=%#v err=%v", tt.want, surfaces, err)
+			}
+		})
+	}
+}
+
+func TestInspectHARDoesNotLetFailedDuplicateHideSuccessfulCapture(t *testing.T) {
+	t.Parallel()
+	request := map[string]any{
+		"method": "POST",
+		"url":    "https://www.instagram.com/graphql/query?doc_id=987654321&fb_api_req_friendly_name=PolarisKeywordSearchQuery",
+	}
+	har := map[string]any{"log": map[string]any{"entries": []any{
+		map[string]any{
+			"request":  request,
+			"response": map[string]any{"status": 500, "content": map[string]any{"text": `{"errors":[{"message":"temporary"}]}`}},
+		},
+		map[string]any{
+			"request":  request,
+			"response": map[string]any{"status": 200, "content": map[string]any{"text": `{"data":{"search":{"edges":[{"node":{"pk":"222","code":"XYZ","media_type":2}}]}}}`}},
+		},
+	}}}
+	raw, err := json.Marshal(har)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "search.har")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	surfaces, err := inspectHAR(path, "coffee")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(surfaces) != 1 || surfaces[0].StatusCode != http.StatusOK {
+		t.Fatalf("expected one successful surface, got %#v", surfaces)
+	}
+}
+
 func TestCaptureRejectsHARWithoutSearchDocID(t *testing.T) {
 	t.Parallel()
 	harPath := filepath.Join(t.TempDir(), "empty.har")

@@ -46,6 +46,12 @@ Mobile `fbsearch` requests cannot reveal web GraphQL persisted-query IDs. With
 - response field paths and media-node paths
 - pagination fields including `end_cursor` and `has_next_page`
 
+The verifier accepts a GraphQL surface only when the matching HAR entry has a
+2xx response, a non-null `data` payload, and at least one recognized media/post
+node. Non-2xx calls, GraphQL error-only responses, and entity-only response
+shapes are rejected as capture evidence. A failed duplicate also cannot hide a
+later successful response for the same friendly-name/`doc_id` pair.
+
 Persisted `doc_id` values rotate. Every generated report is UTC date-stamped and
 warns consumers to re-capture stale IDs. A run without a HAR explicitly says
 GraphQL was not captured; it must not be interpreted as a complete GraphQL

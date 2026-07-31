@@ -533,6 +533,7 @@ func inspectHAR(path, query string) ([]surface, error) {
 	}
 	var out []surface
 	seen := map[string]struct{}{}
+	var rejected []string
 	for _, entry := range har.Log.Entries {
 		u, err := url.Parse(entry.Request.URL)
 		if err != nil || !strings.Contains(u.Path, "graphql") {
@@ -575,7 +576,10 @@ func inspectHAR(path, query string) ([]surface, error) {
 		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[key] = struct{}{}
+		if entry.Response.Status < http.StatusOK || entry.Response.Status >= http.StatusMultipleChoices {
+			rejected = append(rejected, fmt.Sprintf("%s (%s): HTTP %d", friendly, docID, entry.Response.Status))
+			continue
+		}
 		responseBody := entry.Response.Content.Text
 		if entry.Response.Content.Encoding == "base64" {
 			decoded, err := base64.StdEncoding.DecodeString(responseBody)
@@ -597,11 +601,30 @@ func inspectHAR(path, query string) ([]surface, error) {
 			}
 			requestParams.Set(key, "<captured>")
 		}
-		s, _, err := inspectSurface("GraphQL search", entry.Request.Method, u.Scheme+"://"+u.Host, u.Path, docID, friendly, requestParams, entry.Response.Status, []byte(responseBody))
+		responseRaw := []byte(responseBody)
+		var envelope struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(responseRaw, &envelope); err != nil {
+			return nil, fmt.Errorf("inspect %s (%s): decode GraphQL response: %w", friendly, docID, err)
+		}
+		if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+			rejected = append(rejected, fmt.Sprintf("%s (%s): response has no usable data", friendly, docID))
+			continue
+		}
+		s, mediaCount, err := inspectSurface("GraphQL search", entry.Request.Method, u.Scheme+"://"+u.Host, u.Path, docID, friendly, requestParams, entry.Response.Status, responseRaw)
 		if err != nil {
 			return nil, fmt.Errorf("inspect %s (%s): %w", friendly, docID, err)
 		}
+		if mediaCount == 0 {
+			rejected = append(rejected, fmt.Sprintf("%s (%s): response contains no media/post node", friendly, docID))
+			continue
+		}
+		seen[key] = struct{}{}
 		out = append(out, s)
+	}
+	if len(out) == 0 && len(rejected) > 0 {
+		return nil, fmt.Errorf("no usable successful search media call: %s", strings.Join(rejected, "; "))
 	}
 	return out, nil
 }

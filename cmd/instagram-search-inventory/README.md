@@ -47,7 +47,10 @@ Search → Top, Reels, and Accounts, then add `-har /secure/search.har`. The HAR
 read locally and is never copied. Only search-related friendly names, `doc_id`
 values, variable **names**, response field paths, pagination field names, and a
 small media-model candidate sample are retained. Inspect the generated markdown
-before committing it; never commit the source HAR.
+before committing it; never commit the source HAR. A GraphQL entry is retained
+only when it returned 2xx, contains a usable `data` payload, and includes at
+least one recognizable media/post node. Failed, error-only, and entity-only
+entries cannot establish a captured GraphQL search surface.
 
 ## Failure behavior
 
