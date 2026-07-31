@@ -1,0 +1,50 @@
+{
+  "data": {
+    "xdt_fbsearch__top_serp_graphql": {
+      "edges": [
+        {
+          "cursor": "EDGE_CURSOR_REDACTED",
+          "node": {
+            "__typename": "XDTTopSerpAccountUnit",
+            "unit_type": "ACCOUNT",
+            "items": []
+          }
+        },
+        {
+          "cursor": null,
+          "node": {
+            "__typename": "XDTTopSerpMediaGridUnit",
+            "unit_type": "MEDIA_GRID",
+            "items": [
+              {
+                "__typename": "XDTMediaDict",
+                "id": "SECOND_MEDIA_ID_REDACTED",
+                "pk": "SECOND_MEDIA_PK_REDACTED",
+                "code": "SECOND_SHORTCODE_REDACTED",
+                "media_type": 1,
+                "product_type": "feed",
+                "taken_at": 1700000060,
+                "original_width": 1080,
+                "original_height": 1080,
+                "caption": {"text": "SECOND_CAPTION_REDACTED"},
+                "user": {
+                  "id": "SECOND_OWNER_ID_REDACTED",
+                  "pk": "SECOND_OWNER_PK_REDACTED",
+                  "username": "second_username_redacted",
+                  "full_name": "SECOND_FULL_NAME_REDACTED",
+                  "is_verified": true,
+                  "is_private": false
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "page_info": {
+        "has_next_page": false,
+        "end_cursor": null
+      }
+    }
+  },
+  "extensions": {"is_final": true}
+}

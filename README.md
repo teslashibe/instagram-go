@@ -19,6 +19,7 @@ import "github.com/teslashibe/instagram-go"
 | Stories / highlights | ✅   | ✅    | ✅ (read)   |
 | Hashtags             | ✅   | ✅    | ✅ (read)   |
 | Locations            | ✅   | —     | ✅          |
+| Keyword discovery    | ✅   | —     | (fixtures)  |
 | Topical explore      | ✅   | —     | (offline)   |
 | Home timeline        | ✅   | —     | (offline)   |
 
@@ -97,6 +98,66 @@ Required cookies (export from a logged-in browser session):
 `New()` validates the session on construction by fetching `/api/v1/users/<DSUserID>/info/`.
 Pass `WithSkipSessionValidation()` to defer validation (useful in tests).
 
+### Burner credential probes
+
+`cmd/instagram-login-probe` verifies the complete credential-to-media path. It
+asks the social-login sidecar to mint cookies, validates the authenticated user,
+runs a blended keyword search, resolves one of the returned hashtags, and fails
+unless that hashtag returns at least one media post.
+
+```bash
+INSTAGRAM_USERNAME='burner@example.com' \
+INSTAGRAM_PASSWORD='...' \
+SOCIAL_LOGIN_SIDECAR_URL='http://localhost:8190' \
+INSTAGRAM_PROXY_URL='http://residential-proxy.example:8080' \
+INSTAGRAM_SEARCH_QUERY='nature' \
+go run ./cmd/instagram-login-probe
+```
+
+`INSTAGRAM_SEARCH_QUERY` is optional and defaults to `nature`. A residential
+proxy is recommended because Instagram commonly challenges browser logins from
+datacenter addresses. A successful run prints sanitized evidence in this form:
+
+```text
+PASS: authenticated as @burner_account (id=123456789)
+PASS: keyword search query="nature" hashtag=#nature posts=12 first_post=ABC123 permalink=https://www.instagram.com/p/ABC123/
+```
+
+The same path is available as an explicit live acceptance test:
+
+```bash
+INSTAGRAM_LIVE_TEST=1 \
+INSTAGRAM_USERNAME='burner@example.com' \
+INSTAGRAM_PASSWORD='...' \
+SOCIAL_LOGIN_SIDECAR_URL='http://localhost:8190' \
+INSTAGRAM_SEARCH_QUERY='nature' \
+go test -v -run TestLiveInventoryProbe ./cmd/instagram-login-probe
+```
+
+When `INSTAGRAM_LIVE_TEST=1`, missing live configuration is a test failure rather
+than a skip. Never commit passwords, proxy credentials, session cookies, CSRF
+tokens, or raw sidecar responses. See the
+[redacted live validation record](docs/inventory-probe-live-validation.md) for
+the latest committed run.
+
+For the auditable keyword-to-media acceptance capture, use
+`cmd/instagram-search-inventory`. Unlike blended web typeahead, this command
+queries Instagram's mobile keyword SERP directly, fails closed unless both Top
+and Reels contain media nodes, and writes only secret-scrubbed response-shape
+evidence:
+
+```bash
+INSTAGRAM_COOKIES_FILE=/secure/burner-cookies.json \
+go run ./cmd/instagram-search-inventory \
+  -query coffee \
+  -output docs/inventory/captures/YYYY-MM-DD-coffee-rest.md
+```
+
+The submitted probe, its capture contract, and the full live artifact are
+committed at [`cmd/instagram-search-inventory`](cmd/instagram-search-inventory/),
+[`docs/inventory/search-graphql.md`](docs/inventory/search-graphql.md), and
+[`docs/inventory/captures/2026-07-31-coffee-rest.md`](docs/inventory/captures/2026-07-31-coffee-rest.md).
+
 ### User-Agent
 
 The default `User-Agent` is the Instagram Android app's UA string (`Instagram 103.1.0.15.119
@@ -142,12 +203,33 @@ Write endpoints are implemented but not exercised in the integration suite.
 | `SearchUsers(ctx, query, count)`              | `GET  /api/v1/users/search/?q=&count=`                  |
 | `Search(ctx, query)`                          | `GET  /api/v1/web/search/topsearch/`                    |
 | `GetSuggestedUsers(ctx, targetID)`            | `GET  /api/v1/discover/chaining/?target_id=`            |
+| `SearchKeywordPosts(query)` (iterator)        | `POST /graphql/query` (initial + pagination documents)  |
+| `SearchAccounts(ctx, query)`                  | `GET  i.instagram.com/api/v1/fbsearch/account_serp/`     |
+| `SearchTypeaheadUsers(ctx, query, count)`     | `GET  i.instagram.com/api/v1/fbsearch/typeahead_stream/` |
 
-`Search` and `SearchUsers` are REST entity searches; they do not return the
-web keyword-to-media SERP. The separately captured private GraphQL contract,
-including its rotating friendly names, `doc_id` values, variable set, response
-shape, pagination fields, and scrubbed media fixture, is documented in the
-[keyword-search GraphQL inventory](docs/keyword-search-graphql-inventory.md).
+`Search` and `SearchUsers` remain the compatible REST entity searches.
+`SearchKeywordPosts` returns keyword-to-media results and transparently switches
+from the captured initial GraphQL document to the distinct pagination document.
+`SearchAccounts` returns the richer account SERP context (including friendship
+and social-context fields), while `SearchTypeaheadUsers` returns the lighter
+account suggestions shown during keyword entry. The private contracts, status
+checklist, rotating `doc_id` values, and scrubbed evidence are documented in the
+[search inventory](docs/inventory/search-graphql.md).
+
+```go
+it := client.SearchKeywordPosts("specialty coffee").WithMaxPages(2)
+for it.Next(ctx) {
+    post := it.Item()
+    fmt.Printf("%s %s\n", post.Code, post.PermalinkURL)
+}
+if err := it.Err(); err != nil {
+    // Includes the existing auth/rate-limit sentinels and
+    // ErrUnexpectedResponse when a persisted GraphQL document rotates.
+    return err
+}
+
+accounts, err := client.SearchAccounts(ctx, "specialty coffee")
+```
 
 ### Posts & feeds
 

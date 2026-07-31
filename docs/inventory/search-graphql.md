@@ -19,6 +19,38 @@ response paths, Relay pagination contract, and a normalized media sample.
 This document remains the durable capture contract for issue #6. New captures
 belong under `docs/inventory/captures/` after human secret review.
 
+## SDK implementation checklist
+
+The issue #11 vertical slice wraps four previously missing operations behind
+three typed public methods. All calls use the client's existing read pacer,
+retry policy, cooldown circuit breaker, and auth/error sentinels.
+
+### Implemented in SDK
+
+- [x] Web keyword GraphQL initial operation — `SearchKeywordPosts(query)` uses
+  `PolarisKeywordSearchExplorePageRelayQuery` for the first iterator page.
+- [x] Web keyword GraphQL continuation operation — the same iterator switches
+  to `PolarisKeywordSearchExplorePageRelayPaginationQuery` and passes only the
+  preceding non-empty `page_info.end_cursor` as `after`.
+- [x] Mobile Accounts SERP — `SearchAccounts(ctx, query)` maps account cards,
+  page/rank tokens, friendship status, and search social context.
+- [x] Mobile keyword typeahead — `SearchTypeaheadUsers(ctx, query, count)` maps
+  its account suggestions and rank token.
+
+### Deferred
+
+- [ ] Mobile Top REST (`fbsearch/top_serp`) — deferred as duplicate media
+  coverage; the typed GraphQL iterator has a proven continuation contract and
+  avoids introducing a second `SearchPosts`-style API in this slice.
+- [ ] Mobile Reels REST (`fbsearch/reels_serp`) — deferred as duplicate media
+  coverage; its next-page request parameter contract was not observed.
+- [ ] Related-keyword / SERP-filter GraphQL — deferred because the inventory
+  contains no successful persisted operation for either surface.
+- [ ] Dedicated sound/audio search — deferred because no sound-search request
+  was captured; audio fields nested on Reel media do not prove a search op.
+- [ ] Search write actions — deferred because they are write-only and expressly
+  outside the issue's read-discovery scope.
+
 ## Scripted mobile inventory
 
 The probe in [`cmd/instagram-search-inventory`](../../cmd/instagram-search-inventory/)
@@ -132,5 +164,5 @@ CSRF, access-token, raw header, cursor value, or full raw response data. Source
 cookie files and HARs must remain outside the repository. Before committing a
 generated report, still run a human review and a repository secret scan.
 
-No production SDK method is added by this ticket. `Search` and `SearchUsers`
-remain unchanged for compatibility.
+Issue #11 adds the typed discovery methods listed in the checklist while
+leaving the signatures and behavior of `Search` and `SearchUsers` unchanged.

@@ -114,6 +114,11 @@ func parseUser(raw json.RawMessage) (*User, error) {
 
 		Pronouns []string `json:"pronouns"`
 
+		SearchSERPType      string `json:"search_serp_type"`
+		SearchSocialContext string `json:"search_social_context"`
+		SocialContext       string `json:"social_context"`
+		IsSearchBoosted     bool   `json:"is_verified_search_boosted"`
+
 		Friendship *FriendshipStatus `json:"friendship_status"`
 
 		// /web_profile_info/ uses edge_followed_by/edge_follow with .count.
@@ -181,6 +186,10 @@ func parseUser(raw json.RawMessage) (*User, error) {
 		Zip:                 aux.Zip,
 		AccountType:         anyToInt(aux.AccountType),
 		Pronouns:            aux.Pronouns,
+		SearchSERPType:      aux.SearchSERPType,
+		SearchSocialContext: aux.SearchSocialContext,
+		SocialContext:       aux.SocialContext,
+		IsSearchBoosted:     aux.IsSearchBoosted,
 		FriendshipStatus:    aux.Friendship,
 		Raw:                 raw,
 	}, nil

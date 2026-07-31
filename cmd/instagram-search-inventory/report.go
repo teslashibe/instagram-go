@@ -46,7 +46,7 @@ func renderReport(r report) (string, error) {
 	fmt.Fprintln(&b, "- Mobile Search tabs are served by `i.instagram.com/api/v1/fbsearch/*` (or the explicitly selected `-host`) with a mobile app ID/user-agent and an authenticated burner session.")
 	fmt.Fprintln(&b, "- Existing SDK entity typeahead remains `www.instagram.com/api/v1/web/search/topsearch/`; it returns users, hashtags, and places and is not evidence of keyword-to-media search.")
 	fmt.Fprintln(&b, "- Web search GraphQL is normally `www.instagram.com/graphql/query` or `/api/graphql`; its friendly names and `doc_id` values rotate independently of the mobile REST paths.")
-	fmt.Fprintln(&b, "- `Search` and `SearchUsers` are unchanged. This inventory is research input for a later typed `SearchPosts` implementation.")
+	fmt.Fprintln(&b, "- `Search` and `SearchUsers` are unchanged. SDK implementation status for captured operations is maintained in `docs/inventory/search-graphql.md`.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## `Post` model candidate mapping")
 	fmt.Fprintln(&b)

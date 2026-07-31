@@ -40,6 +40,10 @@ type User struct {
 	Zip                 string   `json:"zip,omitempty"`
 	AccountType         int      `json:"account_type,omitempty"`
 	Pronouns            []string `json:"pronouns,omitempty"`
+	SearchSERPType      string   `json:"search_serp_type,omitempty"`
+	SearchSocialContext string   `json:"search_social_context,omitempty"`
+	SocialContext       string   `json:"social_context,omitempty"`
+	IsSearchBoosted     bool     `json:"is_verified_search_boosted,omitempty"`
 
 	FriendshipStatus *FriendshipStatus `json:"friendship_status,omitempty"`
 

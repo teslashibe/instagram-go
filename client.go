@@ -33,6 +33,10 @@ type requestOptions struct {
 	FormBody url.Values
 	// JSONBody, if non-nil, is sent as application/json.
 	JSONBody any
+	// BaseURL overrides the request host. Discovery endpoints captured from the
+	// mobile API use i.instagram.com while the rest of the SDK defaults to the
+	// web host.
+	BaseURL string
 }
 
 type requestHost uint8
@@ -73,13 +77,9 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 		method = http.MethodPost
 	}
 
-	// Build the URL from the explicitly selected request surface. Existing
-	// callers use the zero-value WWW host; mobile SERP callers opt into API.
-	host := c.wwwHost
-	if opts.Host == requestHostAPI {
-		host = c.apiHost
-	}
-	u := host + path
+	// BaseURL (discovery wrappers) wins; otherwise Host selects www vs API.
+	requestBaseURL := c.requestBaseURL(opts)
+	u := requestBaseURL + path
 	if len(q) > 0 {
 		sep := "?"
 		if strings.Contains(u, "?") {
@@ -135,6 +135,33 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 	return nil, nil, lastErr
 }
 
+func (c *Client) requestBaseURL(opts *requestOptions) string {
+	if opts != nil && opts.BaseURL != "" {
+		return strings.TrimRight(opts.BaseURL, "/")
+	}
+	if opts != nil && opts.Host == requestHostAPI {
+		return c.apiHost
+	}
+	if c.wwwHost != "" {
+		return c.wwwHost
+	}
+	return baseURL
+}
+
+func (c *Client) usesAPIRequestProfile(opts *requestOptions, requestBaseURL string) bool {
+	if opts != nil && opts.Host == requestHostAPI {
+		return true
+	}
+	if requestBaseURL == "" {
+		return false
+	}
+	apiHost := c.apiHost
+	if apiHost == "" {
+		apiHost = defaultAPIHost
+	}
+	return strings.TrimRight(requestBaseURL, "/") == strings.TrimRight(apiHost, "/")
+}
+
 func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts *requestOptions) (*http.Request, error) {
 	var bodyReader io.Reader
 	contentType := ""
@@ -157,10 +184,13 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		return nil, err
 	}
 
+	requestBaseURL := c.requestBaseURL(opts)
+	useAPIProfile := c.usesAPIRequestProfile(opts, requestBaseURL)
+
 	userAgent := c.userAgent
 	appID := c.appID
 	acceptLanguage := "en-US,en;q=0.9"
-	if opts.Host == requestHostAPI {
+	if useAPIProfile {
 		userAgent = c.apiUserAgent
 		appID = c.apiAppID
 		acceptLanguage = "en-US"
@@ -169,10 +199,9 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", acceptLanguage)
 	req.Header.Set("X-IG-App-ID", appID)
-	if opts.Host == requestHostAPI {
-		// These are the mobile headers observed on the live fbsearch capture.
-		// Cookie auth was sufficient; do not synthesize a bearer token or web
-		// claim for a browser-minted session.
+	if useAPIProfile {
+		// Mobile headers observed on the live fbsearch capture. Cookie auth was
+		// sufficient; do not synthesize a bearer token or web claim.
 		req.Header.Set("X-IG-Capabilities", "3brTv10=")
 		req.Header.Set("X-IG-Connection-Type", "WIFI")
 	} else {
@@ -182,13 +211,13 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
-		if opts.Referer != "" {
-			req.Header.Set("Referer", opts.Referer)
-		} else {
-			req.Header.Set("Referer", c.wwwHost+"/")
-		}
-		req.Header.Set("Origin", c.wwwHost)
 	}
+	if opts.Referer != "" {
+		req.Header.Set("Referer", opts.Referer)
+	} else {
+		req.Header.Set("Referer", requestBaseURL+"/")
+	}
+	req.Header.Set("Origin", requestBaseURL)
 	req.Header.Set("X-CSRFToken", c.cookies.CSRFToken)
 	if opts.IsWrite {
 		req.Header.Set("X-Instagram-AJAX", "1")
@@ -399,6 +428,8 @@ func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL stri
 		return fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
 	case strings.Contains(msg, "checkpoint") || strings.Contains(msg, "challenge_required"):
 		return fmt.Errorf("%w: %s", ErrChallengeRequired, apiErr.Error())
+	case strings.Contains(msg, "login_required") || strings.Contains(msg, "login required"):
+		return fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
 	case strings.Contains(msg, "csrf"):
 		return fmt.Errorf("%w: %s", ErrCSRF, apiErr.Error())
 	case strings.Contains(msg, "useragent"):
