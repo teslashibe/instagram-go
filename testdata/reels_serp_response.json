@@ -1,0 +1,38 @@
+{
+  "has_more": true,
+  "page_index": 0,
+  "rank_token": "REELS_RANK_TOKEN_REDACTED",
+  "reels_max_id": "REELS_MAX_ID_REDACTED",
+  "reels_serp_modules": [
+    {
+      "clips": [
+        {
+          "media": {
+            "id": "REEL_MEDIA_PK_REDACTED_OWNER_PK_REDACTED",
+            "pk": "REEL_MEDIA_PK_REDACTED",
+            "code": "REEL_SHORTCODE_REDACTED",
+            "media_type": 2,
+            "product_type": "clips",
+            "taken_at": 1700000000,
+            "caption": {
+              "text": "COFFEE_REEL_CAPTION_REDACTED"
+            },
+            "user": {
+              "pk": "REEL_OWNER_PK_REDACTED",
+              "username": "coffee_reel_creator_redacted"
+            },
+            "play_count": 123,
+            "video_versions": [
+              {
+                "url": "https://example.invalid/reel.mp4",
+                "width": 720,
+                "height": 1280
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "status": "ok"
+}

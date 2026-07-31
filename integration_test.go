@@ -470,6 +470,42 @@ func TestIntegration_SearchUsers(t *testing.T) {
 	t.Logf("PASS: SearchUsers returned %d users (top: @%s)", len(users), users[0].Username)
 }
 
+func TestIntegration_SearchReels(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	posts, err := c.SearchReels("coffee").Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchReels: %v", err)
+	}
+	if len(posts) == 0 {
+		t.Fatal("expected at least one Reel for coffee")
+	}
+	if posts[0].PK == "" {
+		t.Fatalf("first Reel has no media PK: %#v", posts[0])
+	}
+	t.Logf("PASS: SearchReels returned %d reels (first pk=%s code=%s)", len(posts), posts[0].PK, posts[0].Code)
+	logRate(t, c)
+}
+
+func TestIntegration_KeywordTypeahead(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	suggestions, err := c.KeywordTypeahead(ctx, "cof")
+	if err != nil {
+		t.Fatalf("KeywordTypeahead: %v", err)
+	}
+	if len(suggestions) == 0 {
+		t.Log("PASS: Instagram returned no typeahead suggestions (valid empty response)")
+	} else {
+		t.Logf("PASS: KeywordTypeahead returned %d suggestions (first=%q)", len(suggestions), suggestions[0])
+	}
+	logRate(t, c)
+}
+
 func TestIntegration_StoryTray(t *testing.T) {
 	c := newClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

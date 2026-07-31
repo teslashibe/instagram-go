@@ -35,6 +35,42 @@ type TypeaheadSearchResult struct {
 	RankToken string  `json:"rank_token,omitempty"`
 }
 
+// SearchReels returns the first inventory-proven mobile Reels SERP as an
+// iterator of Post values. The captured endpoint exposes a continuation token,
+// but the corresponding request parameter has not been proven, so the iterator
+// deliberately makes at most one upstream request.
+func (c *Client) SearchReels(query string) *Iterator[*Post] {
+	query = strings.TrimSpace(query)
+	return newIterator(func(ctx context.Context, _ string) (Page[*Post], error) {
+		if query == "" {
+			return Page[*Post]{}, fmt.Errorf("instagram: SearchReels: query required")
+		}
+		q := mobileSearchQuery(query, "clips_search_page")
+		var resp struct {
+			ReelsSERPModules []struct {
+				Clips []struct {
+					Media json.RawMessage `json:"media"`
+				} `json:"clips"`
+			} `json:"reels_serp_modules"`
+		}
+		if err := c.doJSON(ctx, http.MethodGet, "/api/v1/fbsearch/reels_serp/", q, mobileSearchRequestOptions(), &resp); err != nil {
+			return Page[*Post]{}, err
+		}
+		if resp.ReelsSERPModules == nil {
+			return Page[*Post]{}, fmt.Errorf("%w: reels SERP missing reels_serp_modules", ErrUnexpectedResponse)
+		}
+		raws := make([]json.RawMessage, 0)
+		for _, module := range resp.ReelsSERPModules {
+			for _, clip := range module.Clips {
+				if len(clip.Media) > 0 && string(clip.Media) != "null" {
+					raws = append(raws, clip.Media)
+				}
+			}
+		}
+		return parsePostList(raws, "", false)
+	})
+}
+
 // SearchKeywordPosts iterates over posts from the authenticated web keyword
 // search GraphQL connection. It uses the inventory-proven initial persisted
 // operation for the first request and the distinct pagination operation for
@@ -167,6 +203,39 @@ func (c *Client) SearchTypeaheadUsers(ctx context.Context, query string, count i
 		return nil, err
 	}
 	return &TypeaheadSearchResult{Users: users, RankToken: resp.RankToken}, nil
+}
+
+// KeywordTypeahead returns lightweight suggestion strings for a partial
+// keyword without loading a full search-results page. The inventory-proven
+// typeahead stream currently returns account entities, so suggestions are
+// their usernames (falling back to display names when necessary). Instagram
+// may validly return an empty slice when it has no suggestions.
+func (c *Client) KeywordTypeahead(ctx context.Context, query string) ([]string, error) {
+	result, err := c.SearchTypeaheadUsers(ctx, query, 30)
+	if err != nil {
+		return nil, err
+	}
+	suggestions := make([]string, 0, len(result.Users))
+	seen := make(map[string]struct{}, len(result.Users))
+	for _, user := range result.Users {
+		if user == nil {
+			continue
+		}
+		suggestion := user.Username
+		if suggestion == "" {
+			suggestion = user.FullName
+		}
+		if suggestion == "" {
+			continue
+		}
+		key := strings.ToLower(suggestion)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		suggestions = append(suggestions, suggestion)
+	}
+	return suggestions, nil
 }
 
 type keywordSearchGraphQLResponse struct {
