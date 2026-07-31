@@ -326,11 +326,13 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	if shaped := decodeStatusFail(body); shaped != nil {
 		mappedErr := c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
 		var genericAPIErr *APIError
-		if !ambiguousValidatedLoginFlag || !errors.As(mappedErr, &genericAPIErr) {
+		if !isAuthStatus || !errors.As(mappedErr, &genericAPIErr) {
 			return body, mappedErr
 		}
-		// A generic failure message does not make require_login:true less
-		// ambiguous. Fall through to the validated 401/403 handling below.
+		// A generic status-fail envelope on 401/403 is still an authentication
+		// failure. Fall through so the HTTP status maps it to ErrInvalidAuth
+		// before validation, or the established soft-block classification
+		// after a healthy response has validated the session.
 	}
 
 	apiErr := &APIError{
