@@ -179,6 +179,12 @@ Write endpoints are implemented but not exercised in the integration suite.
 | `Search(ctx, query)`                          | `GET  /api/v1/web/search/topsearch/`                    |
 | `GetSuggestedUsers(ctx, targetID)`            | `GET  /api/v1/discover/chaining/?target_id=`            |
 
+`Search` and `SearchUsers` are REST entity searches; they do not return the
+web keyword-to-media SERP. The separately captured private GraphQL contract,
+including its rotating friendly names, `doc_id` values, variable set, response
+shape, pagination fields, and scrubbed media fixture, is documented in the
+[keyword-search GraphQL inventory](docs/keyword-search-graphql-inventory.md).
+
 ### Posts & feeds
 
 | Method                                | Endpoint                                                       |

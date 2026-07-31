@@ -1825,7 +1825,21 @@ $.users[].username
 
 ## GraphQL / web capture
 
-No search GraphQL call was supplied in a HAR for this run. The scripted mobile calls use `i.instagram.com/api/v1/fbsearch/*`; they cannot discover rotating web `doc_id` values. Re-run with `-har <search-session.har>` after exercising Search in the app/web client. This absence is explicit and is not a claim that GraphQL was inventoried.
+The scripted mobile calls use `i.instagram.com/api/v1/fbsearch/*` and cannot
+discover rotating web `doc_id` values. Authenticated web Search was captured
+separately and is retained in
+[`2026-06-11-keyword-search-graphql.md`](./2026-06-11-keyword-search-graphql.md).
+That capture records successful initial and continuation media calls:
+
+| Request | Method and path | Friendly name | Captured `doc_id` |
+| --- | --- | --- | --- |
+| Initial | `POST https://www.instagram.com/graphql/query` | `PolarisKeywordSearchExplorePageRelayQuery` | `26586987494245638` |
+| Continuation | `POST https://www.instagram.com/graphql/query` | `PolarisKeywordSearchExplorePageRelayPaginationQuery` | `26577336451926911` |
+
+The linked evidence includes transport parameter names, the GraphQL variable
+name set, response and media-node paths, Relay pagination fields, and a scrubbed
+media sample mapped to `Post`. These dated persisted IDs are observations, not
+stable API constants.
 
 ## Host and compatibility notes
 
