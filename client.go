@@ -201,9 +201,13 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 	req.Header.Set("X-IG-App-ID", appID)
 	if useAPIProfile {
 		// Mobile headers observed on the live fbsearch capture. Cookie auth was
-		// sufficient; do not synthesize a bearer token or web claim.
+		// sufficient; do not synthesize a bearer token or web claim. Leave
+		// Origin/Referer unset unless the caller provided an explicit Referer.
 		req.Header.Set("X-IG-Capabilities", "3brTv10=")
 		req.Header.Set("X-IG-Connection-Type", "WIFI")
+		if opts.Referer != "" {
+			req.Header.Set("Referer", opts.Referer)
+		}
 	} else {
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 		req.Header.Set("X-ASBD-ID", "129477")
@@ -211,13 +215,13 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
+		if opts.Referer != "" {
+			req.Header.Set("Referer", opts.Referer)
+		} else {
+			req.Header.Set("Referer", requestBaseURL+"/")
+		}
+		req.Header.Set("Origin", requestBaseURL)
 	}
-	if opts.Referer != "" {
-		req.Header.Set("Referer", opts.Referer)
-	} else {
-		req.Header.Set("Referer", requestBaseURL+"/")
-	}
-	req.Header.Set("Origin", requestBaseURL)
 	req.Header.Set("X-CSRFToken", c.cookies.CSRFToken)
 	if opts.IsWrite {
 		req.Header.Set("X-Instagram-AJAX", "1")
@@ -317,6 +321,12 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 			Method:     method,
 			URL:        fullURL,
 			Body:       string(body),
+		}
+		// Never-validated 401/403 login cues mean bad/missing credentials.
+		// After validation, the same envelope is treated as session expiry
+		// (or rate-limit when RequireLogin is ambiguous — handled above).
+		if !validated && isAuthStatus {
+			return body, fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
 		}
 		return body, fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
 	}

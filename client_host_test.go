@@ -219,8 +219,10 @@ func TestMobileRequestMapsExpiredSessionHTTPError(t *testing.T) {
 	c := newHostTestClient(t, transport)
 	err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
 		&requestOptions{Host: requestHostAPI}, nil)
-	if !errors.Is(err, ErrSessionExpired) {
-		t.Fatalf("error = %v, want ErrSessionExpired", err)
+	// Never-validated 401 login cues map to ErrInvalidAuth; 2xx login-required
+	// envelopes still use ErrSessionExpired (covered above).
+	if !errors.Is(err, ErrInvalidAuth) {
+		t.Fatalf("error = %v, want ErrInvalidAuth", err)
 	}
 }
 
