@@ -204,15 +204,25 @@ Write endpoints are implemented but not exercised in the integration suite.
 | `Search(ctx, query)`                          | `GET  /api/v1/web/search/topsearch/`                    |
 | `GetSuggestedUsers(ctx, targetID)`            | `GET  /api/v1/discover/chaining/?target_id=`            |
 | `SearchKeywordPosts(query)` (iterator)        | `POST /graphql/query` (initial + pagination documents)  |
+| `SearchReels(query)` (single-page iterator)   | `GET  i.instagram.com/api/v1/fbsearch/reels_serp/`       |
 | `SearchAccounts(ctx, query)`                  | `GET  i.instagram.com/api/v1/fbsearch/account_serp/`     |
 | `SearchTypeaheadUsers(ctx, query, count)`     | `GET  i.instagram.com/api/v1/fbsearch/typeahead_stream/` |
+| `KeywordTypeahead(ctx, query)`                | `GET  i.instagram.com/api/v1/fbsearch/typeahead_stream/` |
 
 `Search` and `SearchUsers` remain the compatible REST entity searches.
 `SearchKeywordPosts` returns keyword-to-media results and transparently switches
 from the captured initial GraphQL document to the distinct pagination document.
+`SearchReels` returns Reel media as ordinary `Post` values, including media PKs
+needed by commenting helpers. It intentionally fetches only the first page: the
+live inventory proved response cursor fields but not their continuation request
+parameters. The iterator shape allows pagination to be added compatibly after a
+continuation request is captured.
 `SearchAccounts` returns the richer account SERP context (including friendship
 and social-context fields), while `SearchTypeaheadUsers` returns the lighter
-account suggestions shown during keyword entry. The private contracts, status
+account suggestions shown during keyword entry. `KeywordTypeahead` is a compact
+string helper over those entities, returning usernames (or display-name
+fallbacks). An empty slice is a valid response when Instagram has no suggestion
+for a partial query. The private contracts, status
 checklist, rotating `doc_id` values, and scrubbed evidence are documented in the
 [search inventory](docs/inventory/search-graphql.md).
 
@@ -229,6 +239,9 @@ if err := it.Err(); err != nil {
 }
 
 accounts, err := client.SearchAccounts(ctx, "specialty coffee")
+
+reels, err := client.SearchReels("specialty coffee").Collect(ctx)
+suggestions, err := client.KeywordTypeahead(ctx, "specialty cof")
 ```
 
 ### Posts & feeds
