@@ -150,6 +150,81 @@ func TestSearchKeywordPostsMapsInitialAndPaginationFixtures(t *testing.T) {
 	}
 }
 
+func TestSearchKeywordPostsSkipsEmptyIntermediateFixture(t *testing.T) {
+	emptyIntermediate := fixture(t, "keyword_search_graphql_empty_intermediate_response.json")
+	continuation := fixture(t, "keyword_search_graphql_pagination_response.json")
+
+	var requests int
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read form: %v", err)
+		}
+		form, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		var variables map[string]any
+		if err := json.Unmarshal([]byte(form.Get("variables")), &variables); err != nil {
+			t.Fatalf("variables: %v", err)
+		}
+		switch requests {
+		case 1:
+			if form.Get("doc_id") != "26586987494245638" || variables["after"] != nil {
+				t.Fatalf("initial request = %#v, variables %#v", form, variables)
+			}
+			return jsonResponse(req, http.StatusOK, emptyIntermediate), nil
+		case 2:
+			if form.Get("doc_id") != "26577336451926911" || variables["after"] != "EMPTY_PAGE_END_CURSOR_REDACTED" {
+				t.Fatalf("continuation request = %#v, variables %#v", form, variables)
+			}
+			return jsonResponse(req, http.StatusOK, continuation), nil
+		default:
+			t.Fatalf("unexpected request %d", requests)
+			return nil, nil
+		}
+	})
+
+	posts, err := c.SearchKeywordPosts("coffee").Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("got %d requests, want 2", requests)
+	}
+	if len(posts) != 1 || posts[0].Code != "SECOND_SHORTCODE_REDACTED" {
+		t.Fatalf("posts = %#v, want continuation media", posts)
+	}
+}
+
+func TestSearchKeywordPostsRejectsStalledEmptyPageCursor(t *testing.T) {
+	var requests int
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		body := []byte(`{
+			"data": {
+				"xdt_fbsearch__top_serp_graphql": {
+					"edges": [],
+					"page_info": {"has_next_page": true, "end_cursor": "STALLED_CURSOR"}
+				}
+			}
+		}`)
+		return jsonResponse(req, http.StatusOK, body), nil
+	})
+
+	it := c.SearchKeywordPosts("coffee")
+	if it.Next(context.Background()) {
+		t.Fatal("unexpected post")
+	}
+	if !errors.Is(it.Err(), instagram.ErrUnexpectedResponse) || !strings.Contains(it.Err().Error(), "cursor did not advance") {
+		t.Fatalf("got %v, want stalled-cursor ErrUnexpectedResponse", it.Err())
+	}
+	if requests != 2 {
+		t.Fatalf("got %d requests, want 2", requests)
+	}
+}
+
 func TestSearchAccountsMapsFixtureAndMobileContract(t *testing.T) {
 	body := fixture(t, "account_serp_response.json")
 	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {

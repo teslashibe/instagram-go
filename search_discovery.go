@@ -208,7 +208,10 @@ func (r keywordSearchGraphQLResponse) page(op graphqlOperation) (Page[*Post], er
 		raws = append(raws, edge.Node.Items...)
 	}
 	pageInfo := r.Data.Connection.PageInfo
-	return parsePostList(raws, pageInfo.EndCursor, pageInfo.HasNextPage && pageInfo.EndCursor != "")
+	if pageInfo.HasNextPage && pageInfo.EndCursor == "" {
+		return Page[*Post]{}, fmt.Errorf("%w: keyword connection has next page without end cursor (%s)", ErrUnexpectedResponse, op.FriendlyName)
+	}
+	return parsePostList(raws, pageInfo.EndCursor, pageInfo.HasNextPage)
 }
 
 func parseSearchUsers(raws []json.RawMessage) ([]*User, error) {

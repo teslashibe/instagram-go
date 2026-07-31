@@ -1,6 +1,11 @@
 package instagram
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
+
+const maxConsecutiveEmptyPages = 100
 
 // Iterator is the generic paginating iterator returned by all list endpoints.
 //
@@ -46,26 +51,51 @@ func (it *Iterator[T]) Next(ctx context.Context) bool {
 		it.pageIdx++
 		return true
 	}
-	if it.pagesSeen > 0 && !it.page.HasMore {
-		return false
+
+	// Some heterogeneous connections can contain pages made entirely of units
+	// filtered out by the endpoint mapper. Keep following a valid cursor until
+	// an item page is found, while preserving maxPages as an upstream-request
+	// limit and protecting unlimited iterators from cursor loops.
+	emptyCursors := make(map[string]struct{})
+	for emptyPages := 0; ; emptyPages++ {
+		if it.pagesSeen > 0 && !it.page.HasMore {
+			return false
+		}
+		if it.maxPages > 0 && it.pagesSeen >= it.maxPages {
+			return false
+		}
+		if emptyPages >= maxConsecutiveEmptyPages {
+			it.err = fmt.Errorf("%w: pagination exceeded %d consecutive empty pages", ErrUnexpectedResponse, maxConsecutiveEmptyPages)
+			return false
+		}
+
+		previousCursor := it.cursor
+		page, err := it.fetch(ctx, previousCursor)
+		if err != nil {
+			it.err = err
+			return false
+		}
+		it.pagesSeen++
+		it.page = page
+		it.cursor = page.NextCursor
+		it.pageIdx = 0
+		if len(page.Items) > 0 {
+			it.pageIdx = 1
+			return true
+		}
+		if !page.HasMore {
+			return false
+		}
+		if page.NextCursor == "" || page.NextCursor == previousCursor {
+			it.err = fmt.Errorf("%w: pagination cursor did not advance after an empty page", ErrUnexpectedResponse)
+			return false
+		}
+		if _, seen := emptyCursors[page.NextCursor]; seen {
+			it.err = fmt.Errorf("%w: pagination cursor repeated after an empty page", ErrUnexpectedResponse)
+			return false
+		}
+		emptyCursors[page.NextCursor] = struct{}{}
 	}
-	if it.maxPages > 0 && it.pagesSeen >= it.maxPages {
-		return false
-	}
-	page, err := it.fetch(ctx, it.cursor)
-	if err != nil {
-		it.err = err
-		return false
-	}
-	it.pagesSeen++
-	it.page = page
-	it.cursor = page.NextCursor
-	it.pageIdx = 0
-	if len(page.Items) == 0 {
-		return false
-	}
-	it.pageIdx = 1
-	return true
 }
 
 // Item returns the current item. Only valid after Next returns true.
