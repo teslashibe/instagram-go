@@ -34,6 +34,13 @@ func newIterator[T any](fetch func(ctx context.Context, cursor string) (Page[T],
 	return &Iterator[T]{fetch: fetch}
 }
 
+// newIteratorWithCursor constructs an Iterator whose first fetch starts from
+// cursor. It is used by endpoints whose initial request needs opaque session
+// state that must remain resumable before the first page has been fetched.
+func newIteratorWithCursor[T any](fetch func(ctx context.Context, cursor string) (Page[T], error), cursor string) *Iterator[T] {
+	return &Iterator[T]{fetch: fetch, cursor: cursor}
+}
+
 // WithMaxPages caps the number of upstream requests the iterator will make.
 // Returns the iterator for chaining. 0 means unlimited.
 func (it *Iterator[T]) WithMaxPages(n int) *Iterator[T] {
