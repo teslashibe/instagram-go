@@ -19,6 +19,7 @@ import "github.com/teslashibe/instagram-go"
 | Stories / highlights | ✅   | ✅    | ✅ (read)   |
 | Hashtags             | ✅   | ✅    | ✅ (read)   |
 | Locations            | ✅   | —     | ✅          |
+| Keyword discovery    | ✅   | —     | (fixtures)  |
 | Topical explore      | ✅   | —     | (offline)   |
 | Home timeline        | ✅   | —     | (offline)   |
 
@@ -118,12 +119,33 @@ Write endpoints are implemented but not exercised in the integration suite.
 | `SearchUsers(ctx, query, count)`              | `GET  /api/v1/users/search/?q=&count=`                  |
 | `Search(ctx, query)`                          | `GET  /api/v1/web/search/topsearch/`                    |
 | `GetSuggestedUsers(ctx, targetID)`            | `GET  /api/v1/discover/chaining/?target_id=`            |
+| `SearchKeywordPosts(query)` (iterator)        | `POST /graphql/query` (initial + pagination documents)  |
+| `SearchAccounts(ctx, query)`                  | `GET  i.instagram.com/api/v1/fbsearch/account_serp/`     |
+| `SearchTypeaheadUsers(ctx, query, count)`     | `GET  i.instagram.com/api/v1/fbsearch/typeahead_stream/` |
 
-`Search` and `SearchUsers` are REST entity searches; they do not return the
-web keyword-to-media SERP. The separately captured private GraphQL contract,
-including its rotating friendly names, `doc_id` values, variable set, response
-shape, pagination fields, and scrubbed media fixture, is documented in the
-[keyword-search GraphQL inventory](docs/keyword-search-graphql-inventory.md).
+`Search` and `SearchUsers` remain the compatible REST entity searches.
+`SearchKeywordPosts` returns keyword-to-media results and transparently switches
+from the captured initial GraphQL document to the distinct pagination document.
+`SearchAccounts` returns the richer account SERP context (including friendship
+and social-context fields), while `SearchTypeaheadUsers` returns the lighter
+account suggestions shown during keyword entry. The private contracts, status
+checklist, rotating `doc_id` values, and scrubbed evidence are documented in the
+[search inventory](docs/inventory/search-graphql.md).
+
+```go
+it := client.SearchKeywordPosts("specialty coffee").WithMaxPages(2)
+for it.Next(ctx) {
+    post := it.Item()
+    fmt.Printf("%s %s\n", post.Code, post.PermalinkURL)
+}
+if err := it.Err(); err != nil {
+    // Includes the existing auth/rate-limit sentinels and
+    // ErrUnexpectedResponse when a persisted GraphQL document rotates.
+    return err
+}
+
+accounts, err := client.SearchAccounts(ctx, "specialty coffee")
+```
 
 ### Posts & feeds
 

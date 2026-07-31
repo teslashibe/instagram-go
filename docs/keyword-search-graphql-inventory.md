@@ -143,5 +143,8 @@ Authorization headers, session IDs, viewer IDs, real cursors, or signed CDN URL
 query strings. Re-capture against a burner account after any schema or persisted
 ID failure.
 
-This inventory does not change the public Go API. Existing `Search` and
-`SearchUsers` methods continue to use their documented REST endpoints.
+`SearchKeywordPosts` now wraps both captured persisted operations and maps only
+media-grid units into typed `Post` values. Existing `Search` and `SearchUsers`
+methods continue to use their documented REST endpoints unchanged. The full
+Implemented in SDK vs Deferred checklist is maintained in
+[`docs/inventory/search-graphql.md`](inventory/search-graphql.md#sdk-implementation-checklist).
