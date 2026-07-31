@@ -188,6 +188,24 @@ func TestMobileRequestMapsExpiredSessionEnvelope(t *testing.T) {
 	}
 }
 
+func TestMobileRequestMapsExpiredSession2xxWithoutStatus(t *testing.T) {
+	transport := &recordingTransport{responses: map[string]string{
+		"i.instagram.test": `{"message":"login_required"}`,
+	}}
+	c := newHostTestClient(t, transport)
+	err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
+		&requestOptions{Host: requestHostAPI}, nil)
+	if !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("error = %v, want ErrSessionExpired", err)
+	}
+	c.validatedMu.Lock()
+	validated := c.validated
+	c.validatedMu.Unlock()
+	if validated {
+		t.Fatal("login-required envelope must not mark the client validated")
+	}
+}
+
 func TestMobileRequestMapsExpiredSessionHTTPError(t *testing.T) {
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -203,6 +221,62 @@ func TestMobileRequestMapsExpiredSessionHTTPError(t *testing.T) {
 		&requestOptions{Host: requestHostAPI}, nil)
 	if !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("error = %v, want ErrSessionExpired", err)
+	}
+}
+
+func TestRequireLoginFalsePreservesValidatedSessionRateLimitHandling(t *testing.T) {
+	requestCount := 0
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		status := http.StatusOK
+		body := `{"status":"ok"}`
+		if requestCount == 2 {
+			status = http.StatusUnauthorized
+			body = `{"require_login":false}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Status:     http.StatusText(status),
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	c := newHostTestClient(t, transport)
+	opts := &requestOptions{Host: requestHostAPI}
+	if err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
+		opts, nil); err != nil {
+		t.Fatalf("healthy request: %v", err)
+	}
+	err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
+		opts, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("error = %v, want ErrRateLimited", err)
+	}
+	if errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("error = %v, must not be ErrSessionExpired", err)
+	}
+}
+
+func TestExpiredSessionCueUsesStructuredValues(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "message", body: `{"message":"login_required"}`, want: true},
+		{name: "error message", body: `{"error_message":"session expired"}`, want: true},
+		{name: "require login true", body: `{"require_login":true}`, want: true},
+		{name: "require login false", body: `{"require_login":false}`, want: false},
+		{name: "unrelated nested text", body: `{"detail":{"require_login":true}}`, want: false},
+		{name: "malformed", body: `{"require_login":`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasExpiredSessionCue([]byte(tt.body)); got != tt.want {
+				t.Errorf("hasExpiredSessionCue(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
 	}
 }
 

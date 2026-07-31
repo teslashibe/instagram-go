@@ -268,6 +268,21 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 		return body, fmt.Errorf("%w: cooldown for %s (redirect to %s)", ErrRateLimited, cd, loc)
 	}
 
+	// Authentication failures are sometimes returned with HTTP 200 and no
+	// status field. Detect structured session-expiry cues before accepting any
+	// response as healthy so those envelopes cannot silently validate a client.
+	// In particular, require_login is only a cue when its JSON value is true.
+	if hasExpiredSessionCue(body) {
+		apiErr := &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Method:     method,
+			URL:        fullURL,
+			Body:       string(body),
+		}
+		return body, fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
+	}
+
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		// Instagram sometimes returns 200 with {"message":"...","status":"fail"}.
 		if shaped := decodeStatusFail(body); shaped != nil {
@@ -296,14 +311,9 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		// A concrete login_required/session-expired body is stronger evidence
-		// than the ambiguous bare 401/403 that Instagram also uses for soft
-		// throttling on an otherwise validated session.
-		if hasExpiredSessionCue(body) {
-			return body, fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
-		}
 		// 401 from a previously-validated session is almost always rate-limit
-		// behaviour ("require_login":true with no body cue), so trip cooldown.
+		// behaviour when there is no concrete session-expiry cue, so trip
+		// cooldown.
 		c.validatedMu.Lock()
 		validated := c.validated
 		c.validatedMu.Unlock()
@@ -328,9 +338,26 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 }
 
 func hasExpiredSessionCue(body []byte) bool {
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "login_required") || strings.Contains(lower, "login required") ||
-		strings.Contains(lower, "require_login") || strings.Contains(lower, "session expired")
+	var envelope struct {
+		Message      string          `json:"message"`
+		ErrorMessage string          `json:"error_message"`
+		RequireLogin json.RawMessage `json:"require_login"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false
+	}
+	if isExpiredSessionMessage(envelope.Message) || isExpiredSessionMessage(envelope.ErrorMessage) {
+		return true
+	}
+	var requireLogin bool
+	return len(envelope.RequireLogin) != 0 &&
+		json.Unmarshal(envelope.RequireLogin, &requireLogin) == nil && requireLogin
+}
+
+func isExpiredSessionMessage(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "login_required") || strings.Contains(message, "login required") ||
+		strings.Contains(message, "require_login") || strings.Contains(message, "session expired")
 }
 
 func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL string, body []byte, isWrite bool) error {
