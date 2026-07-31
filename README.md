@@ -474,10 +474,10 @@ go test -v -count=1 -run '^TestIntegration_GetPosts$' .
 This package ships an [MCP](https://modelcontextprotocol.io/) tool surface in
 `./mcp` for use with [`teslashibe/mcptool`](https://github.com/teslashibe/mcptool)-compatible
 hosts (e.g. [`teslashibe/agent-setup`](https://github.com/teslashibe/agent-setup)).
-50 tools cover the full client API: profile lookup and search, post/reel/timeline/explore
+52 tools cover the full client API: profile lookup and search, post/reel/timeline/explore
 feeds, comments and likes, followers/following and friendship reads + writes
 (follow/unfollow/block/mute), hashtag and location reads + follow/unfollow,
-stories and highlights, and top-search.
+stories and highlights, blended top-search, and keyword post/reel search.
 
 ```go
 import (
