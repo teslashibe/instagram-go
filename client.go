@@ -30,6 +30,10 @@ type requestOptions struct {
 	FormBody url.Values
 	// JSONBody, if non-nil, is sent as application/json.
 	JSONBody any
+	// BaseURL overrides the request host. Discovery endpoints captured from the
+	// mobile API use i.instagram.com while the rest of the SDK defaults to the
+	// web host.
+	BaseURL string
 }
 
 // doJSON makes a request and decodes a JSON body into out. Pass nil out to
@@ -63,8 +67,12 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 		method = http.MethodPost
 	}
 
-	// Build URL
-	u := baseURL + path
+	// Build URL.
+	requestBaseURL := baseURL
+	if opts.BaseURL != "" {
+		requestBaseURL = strings.TrimRight(opts.BaseURL, "/")
+	}
+	u := requestBaseURL + path
 	if len(q) > 0 {
 		sep := "?"
 		if strings.Contains(u, "?") {
@@ -152,12 +160,16 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
+	requestBaseURL := baseURL
+	if opts.BaseURL != "" {
+		requestBaseURL = strings.TrimRight(opts.BaseURL, "/")
+	}
 	if opts.Referer != "" {
 		req.Header.Set("Referer", opts.Referer)
 	} else {
-		req.Header.Set("Referer", baseURL+"/")
+		req.Header.Set("Referer", requestBaseURL+"/")
 	}
-	req.Header.Set("Origin", baseURL)
+	req.Header.Set("Origin", requestBaseURL)
 	req.Header.Set("X-CSRFToken", c.cookies.CSRFToken)
 	if opts.IsWrite {
 		req.Header.Set("X-Instagram-AJAX", "1")
@@ -302,6 +314,8 @@ func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL stri
 	switch {
 	case strings.Contains(msg, "checkpoint") || strings.Contains(msg, "challenge_required"):
 		return fmt.Errorf("%w: %s", ErrChallengeRequired, apiErr.Error())
+	case strings.Contains(msg, "login_required") || strings.Contains(msg, "login required"):
+		return fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
 	case strings.Contains(msg, "csrf"):
 		return fmt.Errorf("%w: %s", ErrCSRF, apiErr.Error())
 	case strings.Contains(msg, "useragent"):

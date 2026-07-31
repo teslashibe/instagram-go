@@ -1,0 +1,27 @@
+{
+  "data": {
+    "xdt_fbsearch__top_serp_graphql": {
+      "edges": [
+        {
+          "cursor": "ACCOUNT_EDGE_CURSOR_REDACTED",
+          "node": {
+            "__typename": "XDTTopSerpAccountUnit",
+            "unit_type": "ACCOUNT",
+            "items": [
+              {
+                "__typename": "XDTUserDict",
+                "id": "ACCOUNT_ID_REDACTED",
+                "username": "account_only_redacted"
+              }
+            ]
+          }
+        }
+      ],
+      "page_info": {
+        "has_next_page": true,
+        "end_cursor": "EMPTY_PAGE_END_CURSOR_REDACTED"
+      }
+    }
+  },
+  "extensions": {"is_final": true}
+}
