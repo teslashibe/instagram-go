@@ -1,0 +1,76 @@
+{
+  "data": {
+    "xdt_viewer": {
+      "user": {
+        "id": "VIEWER_ID_REDACTED",
+        "hide_like_and_view_counts": false
+      }
+    },
+    "xdt_fbsearch__top_serp_graphql": {
+      "edges": [
+        {
+          "cursor": null,
+          "node": {
+            "__typename": "XDTTopSerpMediaGridUnit",
+            "unit_type": "MEDIA_GRID",
+            "items": [
+              {
+                "__typename": "XDTMediaDict",
+                "id": "MEDIA_ID_REDACTED",
+                "pk": "MEDIA_PK_REDACTED",
+                "code": "SHORTCODE_REDACTED",
+                "media_type": 2,
+                "product_type": "clips",
+                "taken_at": 1700000000,
+                "original_width": 1080,
+                "original_height": 1920,
+                "image_versions2": {
+                  "candidates": [
+                    {
+                      "height": 1920,
+                      "url": "https://example.invalid/media/redacted.jpg",
+                      "width": 1080
+                    }
+                  ]
+                },
+                "video_versions": [
+                  {
+                    "height": 1920,
+                    "type": 101,
+                    "url": "https://example.invalid/media/redacted.mp4",
+                    "width": 1080
+                  }
+                ],
+                "video_dash_manifest": null,
+                "is_dash_eligible": false,
+                "number_of_qualities": 1,
+                "has_audio": true,
+                "caption": {
+                  "text": "CAPTION_REDACTED"
+                },
+                "user": {
+                  "id": "OWNER_ID_REDACTED",
+                  "pk": "OWNER_PK_REDACTED",
+                  "username": "username_redacted",
+                  "full_name": "FULL_NAME_REDACTED",
+                  "profile_pic_url": "https://example.invalid/profile/redacted.jpg",
+                  "is_verified": false,
+                  "is_private": false
+                },
+                "carousel_media_count": null,
+                "carousel_media": null
+              }
+            ]
+          }
+        }
+      ],
+      "page_info": {
+        "has_next_page": true,
+        "end_cursor": "END_CURSOR_REDACTED"
+      }
+    }
+  },
+  "extensions": {
+    "is_final": true
+  }
+}
