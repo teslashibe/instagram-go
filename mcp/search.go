@@ -2,7 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	instagram "github.com/teslashibe/instagram-go"
@@ -54,10 +57,27 @@ func searchReels(ctx context.Context, c *instagram.Client, in SearchReelsInput) 
 	return page, nil
 }
 
-// collectSearchPage returns at most one upstream page so the iterator cursor
-// remains a true page boundary that can be resumed by a later MCP call.
+const searchPageCursorPrefix = "mcp-search-v1."
+
+type searchPageCursor struct {
+	Version    int    `json:"v"`
+	PageCursor string `json:"page_cursor,omitempty"`
+	Offset     int    `json:"offset"`
+}
+
+// collectSearchPage returns at most one upstream page. When limit ends inside
+// that page, the MCP cursor records its starting cursor and the consumed
+// offset, allowing the next call to replay the page without skipping items.
 func collectSearchPage[T any](ctx context.Context, it *instagram.Iterator[T], cursor string, limit int) (mcptool.Page[T], error) {
-	it.WithCursor(cursor).WithMaxPages(1)
+	pageCursor, offset, err := decodeSearchPageCursor(cursor)
+	if err != nil {
+		return mcptool.Page[T]{}, err
+	}
+	if pageCursor != "" {
+		it.WithCursor(pageCursor)
+	}
+	pageCursor = it.Cursor()
+	it.WithMaxPages(1)
 	items := make([]T, 0)
 	for it.Next(ctx) {
 		items = append(items, it.Item())
@@ -65,13 +85,69 @@ func collectSearchPage[T any](ctx context.Context, it *instagram.Iterator[T], cu
 	if err := it.Err(); err != nil {
 		return mcptool.Page[T]{}, err
 	}
-	return mcptool.PageOf(items, it.Cursor(), effectiveLimit(limit)), nil
+	if offset > len(items) {
+		return mcptool.Page[T]{}, invalidSearchCursorError("offset exceeds page size")
+	}
+
+	limit = effectiveLimit(limit)
+	end := min(offset+limit, len(items))
+	pageItems := make([]T, end-offset)
+	copy(pageItems, items[offset:end])
+	page := mcptool.Page[T]{
+		Items:      pageItems,
+		NextCursor: it.Cursor(),
+	}
+	if end < len(items) {
+		page.NextCursor, err = encodeSearchPageCursor(pageCursor, end)
+		if err != nil {
+			return mcptool.Page[T]{}, err
+		}
+		page.Truncated = true
+	}
+	return page, nil
+}
+
+func encodeSearchPageCursor(pageCursor string, offset int) (string, error) {
+	raw, err := json.Marshal(searchPageCursor{
+		Version:    1,
+		PageCursor: pageCursor,
+		Offset:     offset,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode search cursor: %w", err)
+	}
+	return searchPageCursorPrefix + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeSearchPageCursor(cursor string) (pageCursor string, offset int, err error) {
+	if !strings.HasPrefix(cursor, searchPageCursorPrefix) {
+		return cursor, 0, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cursor, searchPageCursorPrefix))
+	if err != nil {
+		return "", 0, invalidSearchCursorError("invalid encoding")
+	}
+	var state searchPageCursor
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return "", 0, invalidSearchCursorError("invalid payload")
+	}
+	if state.Version != 1 || state.Offset <= 0 {
+		return "", 0, invalidSearchCursorError("invalid state")
+	}
+	return state.PageCursor, state.Offset, nil
 }
 
 func invalidSearchQueryError() error {
 	return &mcptool.Error{
 		Code:    "invalid_input",
 		Message: "query is required",
+	}
+}
+
+func invalidSearchCursorError(detail string) error {
+	return &mcptool.Error{
+		Code:    "invalid_input",
+		Message: "invalid search cursor: " + detail,
 	}
 }
 

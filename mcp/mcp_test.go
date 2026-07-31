@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -223,6 +224,107 @@ func TestSearchPostsToolReturnsMediaIDsAndResumesCursor(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestSearchPostsToolLimitCursorDoesNotSkipPageRemainder(t *testing.T) {
+	medias := make([]string, 24)
+	for i := range medias {
+		id := fmt.Sprintf("%d", i+1)
+		medias[i] = fmt.Sprintf(`{"media":{"pk":"%s","id":"%s_9","code":"POST%s","media_type":1,"user":{"pk":"9","username":"creator"}}}`, id, id, id)
+	}
+	firstPageBody := fmt.Sprintf(`{
+		"media_grid": {
+			"sections": [{"layout_content":{"medias":[%s]}}],
+			"has_more": true,
+			"next_max_id": "NEXT_1",
+			"rank_token": "RANK_1"
+		},
+		"status":"ok"
+	}`, strings.Join(medias, ","))
+	lastPageBody := `{
+		"media_grid": {
+			"sections": [{"layout_content":{"medias":[{"media":{
+				"pk":"25","id":"25_9","code":"POST25","media_type":1,
+				"user":{"pk":"9","username":"creator"}
+			}}]}}],
+			"has_more": false
+		},
+		"status":"ok"
+	}`
+
+	var requests int
+	var firstRankToken string
+	client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		query := req.URL.Query()
+		rankToken := query.Get("rank_token")
+		if rankToken == "" {
+			t.Error("request has no rank token")
+		}
+		switch query.Get("next_max_id") {
+		case "":
+			if firstRankToken == "" {
+				firstRankToken = rankToken
+			} else if rankToken != firstRankToken {
+				t.Errorf("replayed page rank token = %q, want %q", rankToken, firstRankToken)
+			}
+			return mcpJSONResponse(req, http.StatusOK, firstPageBody), nil
+		case "NEXT_1":
+			if rankToken != "RANK_1" {
+				t.Errorf("next-page rank token = %q, want RANK_1", rankToken)
+			}
+			return mcpJSONResponse(req, http.StatusOK, lastPageBody), nil
+		default:
+			t.Fatalf("unexpected cursor query: %s", req.URL.RawQuery)
+			return nil, nil
+		}
+	})
+	tool := findTool(t, "instagram_search_posts")
+
+	firstRaw, err := tool.Invoke(context.Background(), client, json.RawMessage(`{"query":"coffee","limit":12}`))
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	first := firstRaw.(mcptool.Page[*instagram.Post])
+	if len(first.Items) != 12 || first.Items[0].PK != "1" || first.Items[11].PK != "12" {
+		t.Fatalf("first page identifiers = %#v", first.Items)
+	}
+	if first.NextCursor == "" || !first.Truncated {
+		t.Fatalf("first page continuation = %#v", first)
+	}
+
+	secondInput, err := json.Marshal(map[string]any{
+		"query": "coffee", "limit": 12, "cursor": first.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("marshal second input: %v", err)
+	}
+	secondRaw, err := tool.Invoke(context.Background(), client, secondInput)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	second := secondRaw.(mcptool.Page[*instagram.Post])
+	if len(second.Items) != 12 || second.Items[0].PK != "13" || second.Items[11].PK != "24" || second.NextCursor == "" || second.Truncated {
+		t.Fatalf("second page = %#v", second)
+	}
+
+	thirdInput, err := json.Marshal(map[string]any{
+		"query": "coffee", "limit": 12, "cursor": second.NextCursor,
+	})
+	if err != nil {
+		t.Fatalf("marshal third input: %v", err)
+	}
+	thirdRaw, err := tool.Invoke(context.Background(), client, thirdInput)
+	if err != nil {
+		t.Fatalf("third page: %v", err)
+	}
+	third := thirdRaw.(mcptool.Page[*instagram.Post])
+	if len(third.Items) != 1 || third.Items[0].PK != "25" || third.NextCursor != "" || third.Truncated {
+		t.Fatalf("third page = %#v", third)
+	}
+	if requests != 3 {
+		t.Fatalf("requests = %d, want 3", requests)
 	}
 }
 

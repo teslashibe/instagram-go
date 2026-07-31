@@ -22,10 +22,29 @@ const searchPostsCursorVersion = 1
 func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 	query = strings.TrimSpace(query)
 	seen := make(map[string]struct{})
+	var initialCursor string
+	var initialCursorErr error
+	if query != "" {
+		rankToken, err := newSearchSessionID()
+		if err != nil {
+			initialCursorErr = fmt.Errorf("instagram: SearchPosts: create rank token: %w", err)
+		} else {
+			initialCursor, initialCursorErr = encodeSearchPostsCursor(searchPostsCursor{
+				Version:   searchPostsCursorVersion,
+				RankToken: rankToken,
+			})
+			if initialCursorErr != nil {
+				initialCursorErr = fmt.Errorf("instagram: SearchPosts: encode initial cursor: %w", initialCursorErr)
+			}
+		}
+	}
 
-	return newIterator(func(ctx context.Context, cursor string) (Page[*Post], error) {
+	return newIteratorWithCursor(func(ctx context.Context, cursor string) (Page[*Post], error) {
 		if query == "" {
 			return Page[*Post]{}, fmt.Errorf("instagram: SearchPosts: query required")
+		}
+		if initialCursorErr != nil {
+			return Page[*Post]{}, initialCursorErr
 		}
 
 		state, err := decodeSearchPostsCursor(cursor)
@@ -95,7 +114,7 @@ func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 			return Page[*Post]{}, fmt.Errorf("instagram: SearchPosts: encode cursor: %w", err)
 		}
 		return Page[*Post]{Items: posts, NextCursor: nextCursor, HasMore: true}, nil
-	})
+	}, initialCursor)
 }
 
 type topSERPResponse struct {
@@ -207,7 +226,10 @@ func decodeSearchPostsCursor(encoded string) (searchPostsCursor, error) {
 	if err := json.Unmarshal(raw, &cursor); err != nil {
 		return searchPostsCursor{}, fmt.Errorf("invalid cursor: %w", err)
 	}
-	if cursor.Version != searchPostsCursorVersion || cursor.RankToken == "" || (cursor.NextMaxID == "" && cursor.ReelsMaxID == "") {
+	// A rank-token-only cursor identifies the initial page. SearchPosts seeds
+	// iterators with one so consumers can replay a partially consumed first
+	// page without starting a different ranked search session.
+	if cursor.Version != searchPostsCursorVersion || cursor.RankToken == "" {
 		return searchPostsCursor{}, fmt.Errorf("invalid cursor state")
 	}
 	return cursor, nil
