@@ -18,6 +18,9 @@ import (
 
 // requestOptions tweaks a single request.
 type requestOptions struct {
+	// Host selects the web or mobile API origin and its matching header profile.
+	// The zero value deliberately remains the web host for compatibility.
+	Host requestHost
 	// IsWrite marks the call as a write action — uses writeGap and is more
 	// strictly classified as soft-blocked when the server redirects.
 	IsWrite bool
@@ -30,11 +33,14 @@ type requestOptions struct {
 	FormBody url.Values
 	// JSONBody, if non-nil, is sent as application/json.
 	JSONBody any
-	// BaseURL overrides the request host. Discovery endpoints captured from the
-	// mobile API use i.instagram.com while the rest of the SDK defaults to the
-	// web host.
-	BaseURL string
 }
+
+type requestHost uint8
+
+const (
+	requestHostWWW requestHost = iota
+	requestHostAPI
+)
 
 // doJSON makes a request and decodes a JSON body into out. Pass nil out to
 // discard the body.
@@ -67,11 +73,7 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 		method = http.MethodPost
 	}
 
-	// Build URL.
-	requestBaseURL := baseURL
-	if opts.BaseURL != "" {
-		requestBaseURL = strings.TrimRight(opts.BaseURL, "/")
-	}
+	requestBaseURL := c.requestBaseURL(opts)
 	u := requestBaseURL + path
 	if len(q) > 0 {
 		sep := "?"
@@ -128,6 +130,16 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 	return nil, nil, lastErr
 }
 
+func (c *Client) requestBaseURL(opts *requestOptions) string {
+	if opts != nil && opts.Host == requestHostAPI {
+		return c.apiHost
+	}
+	if c.wwwHost != "" {
+		return c.wwwHost
+	}
+	return baseURL
+}
+
 func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts *requestOptions) (*http.Request, error) {
 	var bodyReader io.Reader
 	contentType := ""
@@ -150,26 +162,44 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", c.userAgent)
+	requestBaseURL := c.requestBaseURL(opts)
+	useAPIProfile := opts.Host == requestHostAPI
+
+	userAgent := c.userAgent
+	appID := c.appID
+	acceptLanguage := "en-US,en;q=0.9"
+	if useAPIProfile {
+		userAgent = c.apiUserAgent
+		appID = c.apiAppID
+		acceptLanguage = "en-US"
+	}
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("X-IG-App-ID", c.appID)
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("X-ASBD-ID", "129477")
-	req.Header.Set("X-IG-WWW-Claim", "0")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	requestBaseURL := baseURL
-	if opts.BaseURL != "" {
-		requestBaseURL = strings.TrimRight(opts.BaseURL, "/")
-	}
-	if opts.Referer != "" {
-		req.Header.Set("Referer", opts.Referer)
+	req.Header.Set("Accept-Language", acceptLanguage)
+	req.Header.Set("X-IG-App-ID", appID)
+	if useAPIProfile {
+		// Mobile headers observed on the live fbsearch capture. Cookie auth was
+		// sufficient; do not synthesize a bearer token or web claim. Leave
+		// Origin/Referer unset unless the caller provided an explicit Referer.
+		req.Header.Set("X-IG-Capabilities", "3brTv10=")
+		req.Header.Set("X-IG-Connection-Type", "WIFI")
+		if opts.Referer != "" {
+			req.Header.Set("Referer", opts.Referer)
+		}
 	} else {
-		req.Header.Set("Referer", requestBaseURL+"/")
+		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("X-ASBD-ID", "129477")
+		req.Header.Set("X-IG-WWW-Claim", "0")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		if opts.Referer != "" {
+			req.Header.Set("Referer", opts.Referer)
+		} else {
+			req.Header.Set("Referer", requestBaseURL+"/")
+		}
+		req.Header.Set("Origin", requestBaseURL)
 	}
-	req.Header.Set("Origin", requestBaseURL)
 	req.Header.Set("X-CSRFToken", c.cookies.CSRFToken)
 	if opts.IsWrite {
 		req.Header.Set("X-Instagram-AJAX", "1")
@@ -249,6 +279,36 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 		return body, fmt.Errorf("%w: cooldown for %s (redirect to %s)", ErrRateLimited, cd, loc)
 	}
 
+	// Authentication failures are sometimes returned with HTTP 200 and no
+	// status field. Detect structured session-expiry cues before accepting any
+	// response as healthy so those envelopes cannot silently validate a client.
+	// A bare require_login:true on 401/403 is ambiguous after the session has
+	// already been validated: Instagram also emits that envelope for soft
+	// blocks. Preserve the established rate-limit classification in that case,
+	// while treating explicit expiry messages and all 2xx cues as definitive.
+	sessionCues := decodeExpiredSessionCues(body)
+	c.validatedMu.Lock()
+	validated := c.validated
+	c.validatedMu.Unlock()
+	isAuthStatus := resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden
+	ambiguousValidatedLoginFlag := sessionCues.RequireLogin && isAuthStatus && validated
+	if sessionCues.ExplicitMessage || (sessionCues.RequireLogin && !ambiguousValidatedLoginFlag) {
+		apiErr := &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Method:     method,
+			URL:        fullURL,
+			Body:       string(body),
+		}
+		// Never-validated 401/403 login cues mean bad/missing credentials.
+		// After validation, the same envelope is treated as session expiry
+		// (or rate-limit when RequireLogin is ambiguous — handled above).
+		if !validated && isAuthStatus {
+			return body, fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
+		}
+		return body, fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
+	}
+
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		// Instagram sometimes returns 200 with {"message":"...","status":"fail"}.
 		if shaped := decodeStatusFail(body); shaped != nil {
@@ -264,7 +324,15 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	}
 
 	if shaped := decodeStatusFail(body); shaped != nil {
-		return body, c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
+		mappedErr := c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
+		var genericAPIErr *APIError
+		if !isAuthStatus || !errors.As(mappedErr, &genericAPIErr) {
+			return body, mappedErr
+		}
+		// A generic status-fail envelope on 401/403 is still an authentication
+		// failure. Fall through so the HTTP status maps it to ErrInvalidAuth
+		// before validation, or the established soft-block classification
+		// after a healthy response has validated the session.
 	}
 
 	apiErr := &APIError{
@@ -278,10 +346,8 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		// 401 from a previously-validated session is almost always rate-limit
-		// behaviour ("require_login":true with no body cue), so trip cooldown.
-		c.validatedMu.Lock()
-		validated := c.validated
-		c.validatedMu.Unlock()
+		// behaviour when there is no concrete session-expiry cue, so trip
+		// cooldown.
 		if validated {
 			cd := c.cooldownFor(isWrite)
 			c.tripCooldown(isWrite, cd, fmt.Sprintf("HTTP %d (validated session)", resp.StatusCode))
@@ -302,6 +368,41 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	return body, apiErr
 }
 
+type expiredSessionCues struct {
+	ExplicitMessage bool
+	RequireLogin    bool
+}
+
+func decodeExpiredSessionCues(body []byte) expiredSessionCues {
+	var envelope struct {
+		Message      string          `json:"message"`
+		ErrorMessage string          `json:"error_message"`
+		RequireLogin json.RawMessage `json:"require_login"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return expiredSessionCues{}
+	}
+	cues := expiredSessionCues{
+		ExplicitMessage: isExpiredSessionMessage(envelope.Message) || isExpiredSessionMessage(envelope.ErrorMessage),
+	}
+	var requireLogin bool
+	if len(envelope.RequireLogin) != 0 && json.Unmarshal(envelope.RequireLogin, &requireLogin) == nil {
+		cues.RequireLogin = requireLogin
+	}
+	return cues
+}
+
+func hasExpiredSessionCue(body []byte) bool {
+	cues := decodeExpiredSessionCues(body)
+	return cues.ExplicitMessage || cues.RequireLogin
+}
+
+func isExpiredSessionMessage(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "login_required") || strings.Contains(message, "login required") ||
+		strings.Contains(message, "require_login") || strings.Contains(message, "session expired")
+}
+
 func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL string, body []byte, isWrite bool) error {
 	msg := strings.ToLower(shaped.Message)
 	apiErr := &APIError{
@@ -312,6 +413,9 @@ func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL stri
 		Body:       string(body),
 	}
 	switch {
+	case strings.Contains(msg, "login_required") || strings.Contains(msg, "login required") ||
+		strings.Contains(msg, "require_login") || strings.Contains(msg, "session expired"):
+		return fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
 	case strings.Contains(msg, "checkpoint") || strings.Contains(msg, "challenge_required"):
 		return fmt.Errorf("%w: %s", ErrChallengeRequired, apiErr.Error())
 	case strings.Contains(msg, "login_required") || strings.Contains(msg, "login required"):

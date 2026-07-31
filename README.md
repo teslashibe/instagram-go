@@ -164,6 +164,30 @@ The default `User-Agent` is the Instagram Android app's UA string (`Instagram 10
 Android …`). Desktop browser UAs are rejected with `{"message": "useragent mismatch"}` —
 override only if you have a known-good alternative.
 
+### Web and mobile request routing
+
+One `Client` carries the same explicit cookie header and `http.Client` across
+two Instagram origins. Existing profile, feed, hashtag, entity-search, and web
+GraphQL calls use `https://www.instagram.com`. Mobile keyword SERP calls use
+`https://i.instagram.com` only when the endpoint wrapper explicitly selects the
+mobile request profile; switching hosts does not create or maintain a second
+session.
+
+The profiles intentionally have different defaults:
+
+| Surface | Host | App/header profile |
+|---------|------|--------------------|
+| Existing web API and GraphQL | `www.instagram.com` | Web app ID `936619743392459`, `X-IG-WWW-Claim: 0`, browser fetch/origin headers |
+| Mobile `fbsearch` SERP | `i.instagram.com` | Mobile app ID `567067343352427`, current Android UA, `X-IG-Capabilities: 3brTv10=`, `X-IG-Connection-Type: WIFI` |
+
+The live inventory succeeded with browser session cookies and did not require a
+synthesized `Authorization` bearer value or a web WWW-Claim on the mobile host,
+so the client does not invent either. Web GraphQL remains on the WWW host and
+retains its existing claim/header behavior. Override origins with
+`WithWWWHost` and `WithAPIHost`; override only the mobile identity with
+`WithAPIUserAgent` and `WithAPIAppID`. `WithUserAgent` and `WithAppID` retain
+their existing web behavior.
+
 ## Endpoint catalogue
 
 All read endpoints below have been **end-to-end verified** with a live session.

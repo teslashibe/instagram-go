@@ -249,7 +249,7 @@ func (c *Client) userMediaIterator(userID, refererUsername string) *Iterator[*Po
 		}
 		opts := &requestOptions{}
 		if refererUsername != "" {
-			opts.Referer = baseURL + "/" + refererUsername + "/"
+			opts.Referer = c.wwwHost + "/" + refererUsername + "/"
 		}
 		if err := c.doJSON(ctx, "GET", "/api/v1/feed/user/"+userID+"/", q, opts, &resp); err != nil {
 			return Page[*Post]{}, err

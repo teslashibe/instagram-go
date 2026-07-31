@@ -14,10 +14,7 @@ import (
 )
 
 const (
-	mobileBaseURL     = "https://i.instagram.com"
-	mobileSearchAppID = "567067343352427"
-	mobileSearchUA    = "Instagram 321.0.0.0.70 Android (33/13; 420dpi; 1080x2400; Google/google; Pixel 7; panther; panther; en_US; 502001959)"
-	keywordPageSize   = 24
+	keywordPageSize = 24
 )
 
 // AccountSearchResult is one typed page from the mobile account SERP.
@@ -99,7 +96,7 @@ func (c *Client) SearchKeywordPosts(query string) *Iterator[*Post] {
 		var resp keywordSearchGraphQLResponse
 		if err := c.doJSON(ctx, http.MethodPost, "/graphql/query", nil, &requestOptions{
 			FormBody: form,
-			Referer:  baseURL + "/explore/search/keyword/?q=" + url.QueryEscape(query),
+			Referer:  c.wwwHost + "/explore/search/keyword/?q=" + url.QueryEscape(query),
 			ExtraHeaders: map[string]string{
 				"X-FB-Friendly-Name": op.FriendlyName,
 			},
@@ -236,15 +233,7 @@ func mobileSearchQuery(query, surface string) url.Values {
 }
 
 func mobileSearchRequestOptions() *requestOptions {
-	return &requestOptions{
-		BaseURL: mobileBaseURL,
-		ExtraHeaders: map[string]string{
-			"User-Agent":           mobileSearchUA,
-			"X-IG-App-ID":          mobileSearchAppID,
-			"X-IG-Capabilities":    "3brTv10=",
-			"X-IG-Connection-Type": "WIFI",
-		},
-	}
+	return &requestOptions{Host: requestHostAPI}
 }
 
 func newSearchSessionID() (string, error) {
