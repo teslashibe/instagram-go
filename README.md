@@ -97,6 +97,48 @@ Required cookies (export from a logged-in browser session):
 `New()` validates the session on construction by fetching `/api/v1/users/<DSUserID>/info/`.
 Pass `WithSkipSessionValidation()` to defer validation (useful in tests).
 
+### Burner credential inventory probe
+
+`cmd/instagram-login-probe` verifies the complete credential-to-media path. It
+asks the social-login sidecar to mint cookies, validates the authenticated user,
+runs a blended keyword search, resolves one of the returned hashtags, and fails
+unless that hashtag returns at least one media post.
+
+```bash
+INSTAGRAM_USERNAME='burner@example.com' \
+INSTAGRAM_PASSWORD='...' \
+SOCIAL_LOGIN_SIDECAR_URL='http://localhost:8190' \
+INSTAGRAM_PROXY_URL='http://residential-proxy.example:8080' \
+INSTAGRAM_SEARCH_QUERY='nature' \
+go run ./cmd/instagram-login-probe
+```
+
+`INSTAGRAM_SEARCH_QUERY` is optional and defaults to `nature`. A residential
+proxy is recommended because Instagram commonly challenges browser logins from
+datacenter addresses. A successful run prints sanitized evidence in this form:
+
+```text
+PASS: authenticated as @burner_account (id=123456789)
+PASS: keyword search query="nature" hashtag=#nature posts=12 first_post=ABC123 permalink=https://www.instagram.com/p/ABC123/
+```
+
+The same path is available as an explicit live acceptance test:
+
+```bash
+INSTAGRAM_LIVE_TEST=1 \
+INSTAGRAM_USERNAME='burner@example.com' \
+INSTAGRAM_PASSWORD='...' \
+SOCIAL_LOGIN_SIDECAR_URL='http://localhost:8190' \
+INSTAGRAM_SEARCH_QUERY='nature' \
+go test -v -run TestLiveInventoryProbe ./cmd/instagram-login-probe
+```
+
+When `INSTAGRAM_LIVE_TEST=1`, missing live configuration is a test failure rather
+than a skip. Never commit passwords, proxy credentials, session cookies, CSRF
+tokens, or raw sidecar responses. See the
+[redacted live validation record](docs/inventory-probe-live-validation.md) for
+the latest committed run.
+
 ### User-Agent
 
 The default `User-Agent` is the Instagram Android app's UA string (`Instagram 103.1.0.15.119
