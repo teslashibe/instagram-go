@@ -97,7 +97,7 @@ Required cookies (export from a logged-in browser session):
 `New()` validates the session on construction by fetching `/api/v1/users/<DSUserID>/info/`.
 Pass `WithSkipSessionValidation()` to defer validation (useful in tests).
 
-### Burner credential inventory probe
+### Burner credential probes
 
 `cmd/instagram-login-probe` verifies the complete credential-to-media path. It
 asks the social-login sidecar to mint cookies, validates the authenticated user,
@@ -138,6 +138,24 @@ than a skip. Never commit passwords, proxy credentials, session cookies, CSRF
 tokens, or raw sidecar responses. See the
 [redacted live validation record](docs/inventory-probe-live-validation.md) for
 the latest committed run.
+
+For the auditable keyword-to-media acceptance capture, use
+`cmd/instagram-search-inventory`. Unlike blended web typeahead, this command
+queries Instagram's mobile keyword SERP directly, fails closed unless both Top
+and Reels contain media nodes, and writes only secret-scrubbed response-shape
+evidence:
+
+```bash
+INSTAGRAM_COOKIES_FILE=/secure/burner-cookies.json \
+go run ./cmd/instagram-search-inventory \
+  -query coffee \
+  -output docs/inventory/captures/YYYY-MM-DD-coffee-rest.md
+```
+
+The submitted probe, its capture contract, and the full live artifact are
+committed at [`cmd/instagram-search-inventory`](cmd/instagram-search-inventory/),
+[`docs/inventory/search-graphql.md`](docs/inventory/search-graphql.md), and
+[`docs/inventory/captures/2026-07-31-coffee-rest.md`](docs/inventory/captures/2026-07-31-coffee-rest.md).
 
 ### User-Agent
 
