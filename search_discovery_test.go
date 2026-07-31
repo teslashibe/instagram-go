@@ -352,6 +352,186 @@ func TestSearchKeywordPostsRejectsStalledEmptyPageCursor(t *testing.T) {
 	}
 }
 
+func TestSearchPostsMapsTopSERPLayoutsAndResumesCursor(t *testing.T) {
+	var requests int
+	var firstRankToken string
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		q := req.URL.Query()
+		if req.Method != http.MethodGet || req.URL.Host != "i.instagram.com" || req.URL.Path != "/api/v1/fbsearch/top_serp/" {
+			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		if q.Get("query") != "billing automation" || q.Get("search_surface") != "top_serp" || q.Get("timezone_offset") == "" {
+			t.Errorf("unexpected query: %s", req.URL.RawQuery)
+		}
+		if req.Header.Get("X-IG-App-ID") != "567067343352427" || req.Header.Get("X-IG-Capabilities") != "3brTv10=" {
+			t.Errorf("missing mobile headers: %#v", req.Header)
+		}
+		switch requests {
+		case 1:
+			firstRankToken = q.Get("rank_token")
+			if firstRankToken == "" || q.Get("next_max_id") != "" || q.Get("reels_max_id") != "" {
+				t.Errorf("initial cursors: %s", req.URL.RawQuery)
+			}
+			body := []byte(`{
+				"media_grid": {
+					"sections": [
+						{"layout_content":{"medias":[{"media":{"pk":"101","id":"101_9","code":"PHOTO101","media_type":1,"product_type":"feed","caption":{"text":"first #billing"},"user":{"pk":"9","username":"creator"}}},{"media":{"pk":"999","id":"999_9","media_type":1,"user":{"pk":"9","username":"creator"}}}]}},
+						{"layout_content":{"fill_items":[{"media":{"pk":"102","id":"102_9","code":"REEL102","media_type":2,"product_type":"clips","caption":{"text":"second"},"user":{"pk":"9","username":"creator"}}}]}},
+						{"layout_content":{"one_by_two_item":{"media":{"pk":"103","id":"103_9","code":"PHOTO103","media_type":1,"user":{"pk":"9","username":"creator"}},"clips":{"items":[{"media":{"pk":"104","id":"104_9","code":"REEL104","media_type":2,"product_type":"clips","user":{"pk":"9","username":"creator"}}},{"media":{"pk":"102","id":"102_9","code":"REEL102","media_type":2,"product_type":"clips"}}]}}}}
+					],
+					"has_more": true,
+					"next_max_id": "NEXT_1",
+					"reels_max_id": "REELS_1",
+					"rank_token": "RANK_1"
+				},
+				"rank_token": "TOP_LEVEL_RANK",
+				"status": "ok"
+			}`)
+			return jsonResponse(req, http.StatusOK, body), nil
+		case 2:
+			if q.Get("next_max_id") != "NEXT_1" || q.Get("reels_max_id") != "REELS_1" || q.Get("rank_token") != "RANK_1" {
+				t.Errorf("continuation cursors not preserved: %s", req.URL.RawQuery)
+			}
+			body := []byte(`{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"105","id":"105_9","code":"PHOTO105","media_type":1,"caption":{"text":"next page"},"user":{"pk":"9","username":"creator"}}}]}}],"has_more":false,"next_max_id":"STALE"},"status":"ok"}`)
+			return jsonResponse(req, http.StatusOK, body), nil
+		default:
+			t.Fatalf("unexpected request %d", requests)
+			return nil, nil
+		}
+	})
+
+	first := c.SearchPosts(" billing automation ").WithMaxPages(1)
+	firstPage, err := first.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(firstPage) != 4 {
+		t.Fatalf("got %d unique first-page posts, want 4", len(firstPage))
+	}
+	for _, post := range firstPage {
+		if post.PK == "" || post.Code == "" || post.Owner == nil || post.PermalinkURL == "" {
+			t.Fatalf("incomplete post mapping: %#v", post)
+		}
+	}
+	if firstPage[0].Caption != "first #billing" || !reflect.DeepEqual(firstPage[0].Hashtags, []string{"billing"}) {
+		t.Fatalf("caption mapping = %#v", firstPage[0])
+	}
+	if firstPage[1].PermalinkURL != "https://www.instagram.com/reel/REEL102/" {
+		t.Fatalf("reel permalink = %q", firstPage[1].PermalinkURL)
+	}
+	if firstRankToken == "RANK_1" {
+		t.Fatal("test did not prove the response rank token replaced the generated token")
+	}
+
+	cursor := first.Cursor()
+	if cursor == "" || strings.Contains(cursor, "NEXT_1") || strings.Contains(cursor, "RANK_1") {
+		t.Fatalf("cursor is not opaque: %q", cursor)
+	}
+	second := c.SearchPosts("billing automation").WithCursor(cursor).WithMaxPages(1)
+	secondPage, err := second.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(secondPage) != 1 || secondPage[0].Code != "PHOTO105" {
+		t.Fatalf("second page = %#v", secondPage)
+	}
+	if second.Cursor() != "" {
+		t.Fatalf("terminal cursor = %q, want empty", second.Cursor())
+	}
+}
+
+func TestSearchPostsContinuesReelsPaginationWithoutNextMaxID(t *testing.T) {
+	tests := []struct {
+		name       string
+		reelsMaxID string
+		body       string
+	}{
+		{
+			name:       "media grid has more with reels cursor",
+			reelsMaxID: "GRID_REELS_1",
+			body:       `{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"201","code":"FIRST201","media_type":1}}]}}],"has_more":true,"reels_max_id":"GRID_REELS_1","rank_token":"RANK_1"},"status":"ok"}`,
+		},
+		{
+			name:       "media grid has more reels",
+			reelsMaxID: "MORE_REELS_1",
+			body:       `{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"201","code":"FIRST201","media_type":1}}]}}],"has_more":false,"has_more_reels":true,"reels_max_id":"MORE_REELS_1","rank_token":"RANK_1"},"status":"ok"}`,
+		},
+		{
+			name:       "embedded clips have more",
+			reelsMaxID: "EMBEDDED_REELS_1",
+			body:       `{"media_grid":{"sections":[{"layout_content":{"one_by_two_item":{"clips":{"items":[{"media":{"pk":"201","code":"FIRST201","media_type":2,"product_type":"clips"}}],"more_available":true,"max_id":"EMBEDDED_REELS_1"}}}}],"has_more":false,"has_more_reels":false,"rank_token":"RANK_1"},"status":"ok"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				q := req.URL.Query()
+				switch requests {
+				case 1:
+					if q.Get("next_max_id") != "" || q.Get("reels_max_id") != "" {
+						t.Errorf("initial cursors: %s", req.URL.RawQuery)
+					}
+					return jsonResponse(req, http.StatusOK, []byte(tt.body)), nil
+				case 2:
+					if q.Get("next_max_id") != "" || q.Get("reels_max_id") != tt.reelsMaxID || q.Get("rank_token") != "RANK_1" {
+						t.Errorf("reels continuation not preserved: %s", req.URL.RawQuery)
+					}
+					body := []byte(`{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"202","code":"SECOND202","media_type":1}}]}}],"has_more":false,"has_more_reels":false},"status":"ok"}`)
+					return jsonResponse(req, http.StatusOK, body), nil
+				default:
+					t.Fatalf("unexpected request %d", requests)
+					return nil, nil
+				}
+			})
+
+			posts, err := c.SearchPosts("coffee").Collect(context.Background())
+			if err != nil {
+				t.Fatalf("SearchPosts: %v", err)
+			}
+			if requests != 2 || len(posts) != 2 || posts[0].Code != "FIRST201" || posts[1].Code != "SECOND202" {
+				t.Fatalf("requests=%d posts=%#v", requests, posts)
+			}
+		})
+	}
+}
+
+func TestSearchPostsRejectsInvalidPaginationWithoutExtraRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		cursor string
+		body   string
+	}{
+		{name: "invalid cursor", cursor: "not-a-search-posts-cursor"},
+		{name: "missing pagination ID", body: `{"media_grid":{"sections":[],"has_more":true,"rank_token":"rank"},"status":"ok"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return jsonResponse(req, http.StatusOK, []byte(tt.body)), nil
+			})
+			it := c.SearchPosts("coffee").WithCursor(tt.cursor)
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if it.Err() == nil {
+				t.Fatal("expected pagination error")
+			}
+			if tt.cursor != "" && requests != 0 {
+				t.Fatalf("invalid cursor performed %d requests", requests)
+			}
+			if tt.cursor == "" && !errors.Is(it.Err(), instagram.ErrUnexpectedResponse) {
+				t.Fatalf("got %v, want ErrUnexpectedResponse", it.Err())
+			}
+		})
+	}
+}
+
 func TestSearchAccountsMapsFixtureAndMobileContract(t *testing.T) {
 	body := fixture(t, "account_serp_response.json")
 	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
@@ -447,6 +627,11 @@ func TestDiscoveryMethodsReturnExistingAuthSentinels(t *testing.T) {
 			it.Next(context.Background())
 			return it.Err()
 		}},
+		{name: "top SERP posts", call: func(c *instagram.Client) error {
+			it := c.SearchPosts("coffee")
+			it.Next(context.Background())
+			return it.Err()
+		}},
 		{name: "reels", call: func(c *instagram.Client) error {
 			it := c.SearchReels("coffee")
 			it.Next(context.Background())
@@ -469,16 +654,18 @@ func TestDiscoveryMethodsReturnExistingAuthSentinels(t *testing.T) {
 		name     string
 		status   int
 		location string
+		body     string
 		want     error
 	}{
-		{name: "unauthenticated", status: http.StatusUnauthorized, want: instagram.ErrInvalidAuth},
-		{name: "expired", status: http.StatusFound, location: "https://www.instagram.com/accounts/login/", want: instagram.ErrSessionExpired},
+		{name: "unauthenticated", status: http.StatusUnauthorized, body: `{"message":"login_required","status":"fail"}`, want: instagram.ErrInvalidAuth},
+		{name: "expired", status: http.StatusFound, location: "https://www.instagram.com/accounts/login/", body: `{"message":"login_required","status":"fail"}`, want: instagram.ErrSessionExpired},
+		{name: "challenge", status: http.StatusOK, body: `{"message":"challenge_required","status":"fail"}`, want: instagram.ErrChallengeRequired},
 	}
 	for _, method := range methods {
 		for _, tc := range cases {
 			t.Run(method.name+"/"+tc.name, func(t *testing.T) {
 				c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
-					resp := jsonResponse(req, tc.status, []byte(`{"message":"login_required","status":"fail"}`))
+					resp := jsonResponse(req, tc.status, []byte(tc.body))
 					if tc.location != "" {
 						resp.Header.Set("Location", tc.location)
 					}
@@ -500,6 +687,11 @@ func TestDiscoveryMethodsParticipateInReadRateLimit(t *testing.T) {
 	}{
 		{name: "keyword posts", call: func(c *instagram.Client) error {
 			it := c.SearchKeywordPosts("coffee")
+			it.Next(context.Background())
+			return it.Err()
+		}},
+		{name: "top SERP posts", call: func(c *instagram.Client) error {
+			it := c.SearchPosts("coffee")
 			it.Next(context.Background())
 			return it.Err()
 		}},
@@ -558,6 +750,10 @@ func TestDiscoveryMethodsValidateQueriesWithoutHTTP(t *testing.T) {
 	it := c.SearchKeywordPosts("  ")
 	if it.Next(context.Background()) || it.Err() == nil {
 		t.Fatalf("SearchKeywordPosts empty query error = %v", it.Err())
+	}
+	posts := c.SearchPosts("  ")
+	if posts.Next(context.Background()) || posts.Err() == nil || !strings.Contains(posts.Err().Error(), "query required") {
+		t.Fatalf("SearchPosts empty query error = %v", posts.Err())
 	}
 	if _, err := c.SearchAccounts(context.Background(), ""); err == nil {
 		t.Fatal("SearchAccounts accepted empty query")

@@ -27,6 +27,9 @@ retry policy, cooldown circuit breaker, and auth/error sentinels.
 
 ### Implemented in SDK
 
+- [x] Mobile Top REST (`fbsearch/top_serp`) — `SearchPosts(query)` walks the
+  captured media-grid layouts and preserves `next_max_id`, `reels_max_id`, and
+  `rank_token` in its opaque resumable iterator cursor.
 - [x] Web keyword GraphQL initial operation — `SearchKeywordPosts(query)` uses
   `PolarisKeywordSearchExplorePageRelayQuery` for the first iterator page.
 - [x] Web keyword GraphQL continuation operation — the same iterator switches
@@ -43,9 +46,10 @@ retry policy, cooldown circuit breaker, and auth/error sentinels.
 
 ### Deferred
 
-- [ ] Mobile Top REST (`fbsearch/top_serp`) — deferred as duplicate media
-  coverage; the typed GraphQL iterator has a proven continuation contract and
-  avoids introducing a second `SearchPosts`-style API in this slice.
+- [ ] Mobile Reels REST (`fbsearch/reels_serp`) — deferred as duplicate media
+  coverage; its next-page request parameter contract was not observed.
+- [ ] Mobile Top REST GraphQL-only framing — Top REST remains available via
+  `SearchPosts`; GraphQL iterators cover typed keyword pagination separately.
 - [ ] Related-keyword / SERP-filter GraphQL — deferred because the inventory
   contains no successful persisted operation for either surface.
 - [ ] Dedicated sound/audio search — deferred because no sound-search request
