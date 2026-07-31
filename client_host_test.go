@@ -224,37 +224,49 @@ func TestMobileRequestMapsExpiredSessionHTTPError(t *testing.T) {
 	}
 }
 
-func TestRequireLoginFalsePreservesValidatedSessionRateLimitHandling(t *testing.T) {
-	requestCount := 0
-	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		status := http.StatusOK
-		body := `{"status":"ok"}`
-		if requestCount == 2 {
-			status = http.StatusUnauthorized
-			body = `{"require_login":false}`
-		}
-		return &http.Response{
-			StatusCode: status,
-			Status:     http.StatusText(status),
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    req,
-		}, nil
-	})
-	c := newHostTestClient(t, transport)
-	opts := &requestOptions{Host: requestHostAPI}
-	if err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
-		opts, nil); err != nil {
-		t.Fatalf("healthy request: %v", err)
+func TestRequireLoginFlagPreservesValidatedSessionRateLimitHandling(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "false", body: `{"require_login":false}`},
+		{name: "true", body: `{"require_login":true}`},
+		{name: "true with generic failure status", body: `{"status":"fail","require_login":true}`},
 	}
-	err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
-		opts, nil)
-	if !errors.Is(err, ErrRateLimited) {
-		t.Fatalf("error = %v, want ErrRateLimited", err)
-	}
-	if errors.Is(err, ErrSessionExpired) {
-		t.Fatalf("error = %v, must not be ErrSessionExpired", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestCount := 0
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requestCount++
+				status := http.StatusOK
+				body := `{"status":"ok"}`
+				if requestCount == 2 {
+					status = http.StatusUnauthorized
+					body = tt.body
+				}
+				return &http.Response{
+					StatusCode: status,
+					Status:     http.StatusText(status),
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Request:    req,
+				}, nil
+			})
+			c := newHostTestClient(t, transport)
+			opts := &requestOptions{Host: requestHostAPI}
+			if err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
+				opts, nil); err != nil {
+				t.Fatalf("healthy request: %v", err)
+			}
+			err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
+				opts, nil)
+			if !errors.Is(err, ErrRateLimited) {
+				t.Fatalf("error = %v, want ErrRateLimited", err)
+			}
+			if errors.Is(err, ErrSessionExpired) {
+				t.Fatalf("error = %v, must not be ErrSessionExpired", err)
+			}
+		})
 	}
 }
 

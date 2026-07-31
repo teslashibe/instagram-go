@@ -271,8 +271,17 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	// Authentication failures are sometimes returned with HTTP 200 and no
 	// status field. Detect structured session-expiry cues before accepting any
 	// response as healthy so those envelopes cannot silently validate a client.
-	// In particular, require_login is only a cue when its JSON value is true.
-	if hasExpiredSessionCue(body) {
+	// A bare require_login:true on 401/403 is ambiguous after the session has
+	// already been validated: Instagram also emits that envelope for soft
+	// blocks. Preserve the established rate-limit classification in that case,
+	// while treating explicit expiry messages and all 2xx cues as definitive.
+	sessionCues := decodeExpiredSessionCues(body)
+	c.validatedMu.Lock()
+	validated := c.validated
+	c.validatedMu.Unlock()
+	isAuthStatus := resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden
+	ambiguousValidatedLoginFlag := sessionCues.RequireLogin && isAuthStatus && validated
+	if sessionCues.ExplicitMessage || (sessionCues.RequireLogin && !ambiguousValidatedLoginFlag) {
 		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
 			Status:     resp.Status,
@@ -298,7 +307,13 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	}
 
 	if shaped := decodeStatusFail(body); shaped != nil {
-		return body, c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
+		mappedErr := c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
+		var genericAPIErr *APIError
+		if !ambiguousValidatedLoginFlag || !errors.As(mappedErr, &genericAPIErr) {
+			return body, mappedErr
+		}
+		// A generic failure message does not make require_login:true less
+		// ambiguous. Fall through to the validated 401/403 handling below.
 	}
 
 	apiErr := &APIError{
@@ -314,9 +329,6 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 		// 401 from a previously-validated session is almost always rate-limit
 		// behaviour when there is no concrete session-expiry cue, so trip
 		// cooldown.
-		c.validatedMu.Lock()
-		validated := c.validated
-		c.validatedMu.Unlock()
 		if validated {
 			cd := c.cooldownFor(isWrite)
 			c.tripCooldown(isWrite, cd, fmt.Sprintf("HTTP %d (validated session)", resp.StatusCode))
@@ -337,21 +349,33 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	return body, apiErr
 }
 
-func hasExpiredSessionCue(body []byte) bool {
+type expiredSessionCues struct {
+	ExplicitMessage bool
+	RequireLogin    bool
+}
+
+func decodeExpiredSessionCues(body []byte) expiredSessionCues {
 	var envelope struct {
 		Message      string          `json:"message"`
 		ErrorMessage string          `json:"error_message"`
 		RequireLogin json.RawMessage `json:"require_login"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return false
+		return expiredSessionCues{}
 	}
-	if isExpiredSessionMessage(envelope.Message) || isExpiredSessionMessage(envelope.ErrorMessage) {
-		return true
+	cues := expiredSessionCues{
+		ExplicitMessage: isExpiredSessionMessage(envelope.Message) || isExpiredSessionMessage(envelope.ErrorMessage),
 	}
 	var requireLogin bool
-	return len(envelope.RequireLogin) != 0 &&
-		json.Unmarshal(envelope.RequireLogin, &requireLogin) == nil && requireLogin
+	if len(envelope.RequireLogin) != 0 && json.Unmarshal(envelope.RequireLogin, &requireLogin) == nil {
+		cues.RequireLogin = requireLogin
+	}
+	return cues
+}
+
+func hasExpiredSessionCue(body []byte) bool {
+	cues := decodeExpiredSessionCues(body)
+	return cues.ExplicitMessage || cues.RequireLogin
 }
 
 func isExpiredSessionMessage(message string) bool {
