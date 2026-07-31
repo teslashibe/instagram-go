@@ -63,9 +63,9 @@ func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 			if err != nil {
 				return Page[*Post]{}, err
 			}
-			// Top SERP can include placeholders in otherwise media-shaped units.
-			// Keep only nodes with an identifier accepted by GetPost/GetPostByID.
-			if post.PK == "" && post.Code == "" {
+			// Top SERP can include placeholders and incomplete media-shaped units.
+			// Every yielded result must have both a usable identifier and a URL.
+			if (post.PK == "" && post.Code == "") || post.PermalinkURL == "" {
 				continue
 			}
 			key := searchPostKey(post)
@@ -76,18 +76,19 @@ func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 			posts = append(posts, post)
 		}
 
-		if !resp.MediaGrid.HasMore {
+		hasMore, embeddedReelsMaxID := resp.MediaGrid.pagination()
+		if !hasMore {
 			return Page[*Post]{Items: posts}, nil
 		}
 
 		next := searchPostsCursor{
 			Version:    searchPostsCursorVersion,
 			NextMaxID:  firstNonEmpty(resp.MediaGrid.NextMaxID, resp.NextMaxID),
-			ReelsMaxID: firstNonEmpty(resp.MediaGrid.ReelsMaxID, resp.ReelsMaxID),
+			ReelsMaxID: firstNonEmpty(resp.MediaGrid.ReelsMaxID, resp.ReelsMaxID, embeddedReelsMaxID),
 			RankToken:  firstNonEmpty(resp.MediaGrid.RankToken, resp.RankToken, state.RankToken),
 		}
-		if next.NextMaxID == "" {
-			return Page[*Post]{}, fmt.Errorf("%w: Top SERP has more results without next_max_id", ErrUnexpectedResponse)
+		if next.NextMaxID == "" && next.ReelsMaxID == "" {
+			return Page[*Post]{}, fmt.Errorf("%w: Top SERP has more results without a continuation ID", ErrUnexpectedResponse)
 		}
 		nextCursor, err := encodeSearchPostsCursor(next)
 		if err != nil {
@@ -105,11 +106,12 @@ type topSERPResponse struct {
 }
 
 type topSERPMediaGrid struct {
-	Sections   []topSERPSection `json:"sections"`
-	HasMore    bool             `json:"has_more"`
-	NextMaxID  string           `json:"next_max_id"`
-	ReelsMaxID string           `json:"reels_max_id"`
-	RankToken  string           `json:"rank_token"`
+	Sections     []topSERPSection `json:"sections"`
+	HasMore      bool             `json:"has_more"`
+	HasMoreReels bool             `json:"has_more_reels"`
+	NextMaxID    string           `json:"next_max_id"`
+	ReelsMaxID   string           `json:"reels_max_id"`
+	RankToken    string           `json:"rank_token"`
 }
 
 type topSERPSection struct {
@@ -118,11 +120,15 @@ type topSERPSection struct {
 		FillItems    []topSERPMediaWrapper `json:"fill_items"`
 		OneByTwoItem *struct {
 			Media json.RawMessage `json:"media"`
-			Clips *struct {
-				Items []topSERPMediaWrapper `json:"items"`
-			} `json:"clips"`
+			Clips *topSERPClips   `json:"clips"`
 		} `json:"one_by_two_item"`
 	} `json:"layout_content"`
+}
+
+type topSERPClips struct {
+	Items         []topSERPMediaWrapper `json:"items"`
+	MoreAvailable bool                  `json:"more_available"`
+	MaxID         string                `json:"max_id"`
 }
 
 type topSERPMediaWrapper struct {
@@ -157,6 +163,23 @@ func (g *topSERPMediaGrid) mediaItems() []json.RawMessage {
 	return raws
 }
 
+func (g *topSERPMediaGrid) pagination() (hasMore bool, embeddedReelsMaxID string) {
+	hasMore = g.HasMore || g.HasMoreReels
+	for _, section := range g.Sections {
+		item := section.LayoutContent.OneByTwoItem
+		if item == nil || item.Clips == nil {
+			continue
+		}
+		if item.Clips.MoreAvailable {
+			hasMore = true
+		}
+		if embeddedReelsMaxID == "" {
+			embeddedReelsMaxID = item.Clips.MaxID
+		}
+	}
+	return hasMore, embeddedReelsMaxID
+}
+
 type searchPostsCursor struct {
 	Version    int    `json:"v"`
 	NextMaxID  string `json:"max_id,omitempty"`
@@ -184,7 +207,7 @@ func decodeSearchPostsCursor(encoded string) (searchPostsCursor, error) {
 	if err := json.Unmarshal(raw, &cursor); err != nil {
 		return searchPostsCursor{}, fmt.Errorf("invalid cursor: %w", err)
 	}
-	if cursor.Version != searchPostsCursorVersion || cursor.RankToken == "" || cursor.NextMaxID == "" {
+	if cursor.Version != searchPostsCursorVersion || cursor.RankToken == "" || (cursor.NextMaxID == "" && cursor.ReelsMaxID == "") {
 		return searchPostsCursor{}, fmt.Errorf("invalid cursor state")
 	}
 	return cursor, nil

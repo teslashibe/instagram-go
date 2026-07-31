@@ -376,7 +376,7 @@ func TestSearchPostsMapsTopSERPLayoutsAndResumesCursor(t *testing.T) {
 			body := []byte(`{
 				"media_grid": {
 					"sections": [
-						{"layout_content":{"medias":[{"media":{"pk":"101","id":"101_9","code":"PHOTO101","media_type":1,"product_type":"feed","caption":{"text":"first #billing"},"user":{"pk":"9","username":"creator"}}}]}},
+						{"layout_content":{"medias":[{"media":{"pk":"101","id":"101_9","code":"PHOTO101","media_type":1,"product_type":"feed","caption":{"text":"first #billing"},"user":{"pk":"9","username":"creator"}}},{"media":{"pk":"999","id":"999_9","media_type":1,"user":{"pk":"9","username":"creator"}}}]}},
 						{"layout_content":{"fill_items":[{"media":{"pk":"102","id":"102_9","code":"REEL102","media_type":2,"product_type":"clips","caption":{"text":"second"},"user":{"pk":"9","username":"creator"}}}]}},
 						{"layout_content":{"one_by_two_item":{"media":{"pk":"103","id":"103_9","code":"PHOTO103","media_type":1,"user":{"pk":"9","username":"creator"}},"clips":{"items":[{"media":{"pk":"104","id":"104_9","code":"REEL104","media_type":2,"product_type":"clips","user":{"pk":"9","username":"creator"}}},{"media":{"pk":"102","id":"102_9","code":"REEL102","media_type":2,"product_type":"clips"}}]}}}}
 					],
@@ -438,6 +438,64 @@ func TestSearchPostsMapsTopSERPLayoutsAndResumesCursor(t *testing.T) {
 	}
 	if second.Cursor() != "" {
 		t.Fatalf("terminal cursor = %q, want empty", second.Cursor())
+	}
+}
+
+func TestSearchPostsContinuesReelsPaginationWithoutNextMaxID(t *testing.T) {
+	tests := []struct {
+		name       string
+		reelsMaxID string
+		body       string
+	}{
+		{
+			name:       "media grid has more with reels cursor",
+			reelsMaxID: "GRID_REELS_1",
+			body:       `{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"201","code":"FIRST201","media_type":1}}]}}],"has_more":true,"reels_max_id":"GRID_REELS_1","rank_token":"RANK_1"},"status":"ok"}`,
+		},
+		{
+			name:       "media grid has more reels",
+			reelsMaxID: "MORE_REELS_1",
+			body:       `{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"201","code":"FIRST201","media_type":1}}]}}],"has_more":false,"has_more_reels":true,"reels_max_id":"MORE_REELS_1","rank_token":"RANK_1"},"status":"ok"}`,
+		},
+		{
+			name:       "embedded clips have more",
+			reelsMaxID: "EMBEDDED_REELS_1",
+			body:       `{"media_grid":{"sections":[{"layout_content":{"one_by_two_item":{"clips":{"items":[{"media":{"pk":"201","code":"FIRST201","media_type":2,"product_type":"clips"}}],"more_available":true,"max_id":"EMBEDDED_REELS_1"}}}}],"has_more":false,"has_more_reels":false,"rank_token":"RANK_1"},"status":"ok"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				q := req.URL.Query()
+				switch requests {
+				case 1:
+					if q.Get("next_max_id") != "" || q.Get("reels_max_id") != "" {
+						t.Errorf("initial cursors: %s", req.URL.RawQuery)
+					}
+					return jsonResponse(req, http.StatusOK, []byte(tt.body)), nil
+				case 2:
+					if q.Get("next_max_id") != "" || q.Get("reels_max_id") != tt.reelsMaxID || q.Get("rank_token") != "RANK_1" {
+						t.Errorf("reels continuation not preserved: %s", req.URL.RawQuery)
+					}
+					body := []byte(`{"media_grid":{"sections":[{"layout_content":{"fill_items":[{"media":{"pk":"202","code":"SECOND202","media_type":1}}]}}],"has_more":false,"has_more_reels":false},"status":"ok"}`)
+					return jsonResponse(req, http.StatusOK, body), nil
+				default:
+					t.Fatalf("unexpected request %d", requests)
+					return nil, nil
+				}
+			})
+
+			posts, err := c.SearchPosts("coffee").Collect(context.Background())
+			if err != nil {
+				t.Fatalf("SearchPosts: %v", err)
+			}
+			if requests != 2 || len(posts) != 2 || posts[0].Code != "FIRST201" || posts[1].Code != "SECOND202" {
+				t.Fatalf("requests=%d posts=%#v", requests, posts)
+			}
+		})
 	}
 }
 
