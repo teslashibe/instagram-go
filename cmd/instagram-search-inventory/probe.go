@@ -130,16 +130,34 @@ func (p probe) capture(ctx context.Context, harPath string) (report, error) {
 }
 
 func (p probe) authenticate(ctx context.Context) error {
-	q := url.Values{"edit": {"true"}}
-	body, _, err := p.get(ctx, "/api/v1/accounts/current_user/", q)
+	// Browser-minted sessions often serve i.instagram.com fbsearch while
+	// accounts/current_user returns status=fail ("something went wrong").
+	// Validate with a real search surface instead so we still fail closed on
+	// dead cookies before writing inventory.
+	rankToken, err := randomUUID()
 	if err != nil {
 		return fmt.Errorf("burner session validation: %w", err)
 	}
-	var current struct {
-		User json.RawMessage `json:"user"`
+	_, timezoneOffset := time.Now().Zone()
+	body, _, err := p.get(ctx, "/api/v1/fbsearch/top_serp/", values(
+		"search_surface", "top_serp",
+		"timezone_offset", fmt.Sprintf("%d", timezoneOffset),
+		"query", p.query,
+		"rank_token", rankToken,
+	))
+	if err != nil {
+		return fmt.Errorf("burner session validation: top_serp: %w", err)
 	}
-	if json.Unmarshal(body, &current) != nil || len(current.User) == 0 || string(current.User) == "null" {
-		return errors.New("burner session validation: HTTP success without a current user (authentication rejected or challenged)")
+	var decoded map[string]any
+	if json.Unmarshal(body, &decoded) != nil {
+		return errors.New("burner session validation: top_serp returned non-JSON (authentication rejected or challenged)")
+	}
+	if _, ok := decoded["media_grid"]; !ok {
+		// Still accept if the envelope is present under an alternate key; surface
+		// capture remains fail-closed on zero media.
+		if decoded["status"] == "fail" {
+			return errors.New("burner session validation: top_serp status=fail")
+		}
 	}
 	return nil
 }

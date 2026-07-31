@@ -1,14 +1,16 @@
 # Instagram keyword search capture inventory
 
-Status: **probe implemented; live artifact pending an authenticated burner
-session and, for GraphQL, an operator-supplied Search HAR**.
+Status: **REST inventory captured live** (2026-07-31). GraphQL still requires
+an operator-supplied Search HAR (`-har`).
 
-This document is the durable capture contract for issue #6. It deliberately
-does not claim a live result in this repository: no operator-supplied session
-cookie or reachable social-login sidecar was available for this implementation
-run, so authentication could not be completed without inventing evidence.
-Successful date-stamped output from the probe belongs under
-`docs/inventory/captures/` after human secret review.
+Live secret-scrubbed REST evidence:
+[`docs/inventory/captures/2026-07-31-coffee-rest.md`](./captures/2026-07-31-coffee-rest.md)
+— four mobile `fbsearch` tabs on `i.instagram.com`, keyword `coffee`, 32 media
+nodes. Browser-minted sessions may fail `accounts/current_user` on the mobile
+host while still serving SERP; the probe validates via `top_serp` instead.
+
+This document remains the durable capture contract for issue #6. New captures
+belong under `docs/inventory/captures/` after human secret review.
 
 ## Scripted mobile inventory
 
