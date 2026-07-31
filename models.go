@@ -233,8 +233,8 @@ type Place struct {
 }
 
 // Page is one page of a paginated response. NextCursor is empty when there
-// are no more results. Pass it back to the next call's WithCursor option to
-// fetch the following page.
+// are no more results. Iterator-backed methods expose it through Cursor; pass
+// it to WithCursor on a fresh iterator to fetch the following page.
 type Page[T any] struct {
 	Items      []T
 	NextCursor string

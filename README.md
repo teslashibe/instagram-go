@@ -203,12 +203,15 @@ Write endpoints are implemented but not exercised in the integration suite.
 | `SearchUsers(ctx, query, count)`              | `GET  /api/v1/users/search/?q=&count=`                  |
 | `Search(ctx, query)`                          | `GET  /api/v1/web/search/topsearch/`                    |
 | `GetSuggestedUsers(ctx, targetID)`            | `GET  /api/v1/discover/chaining/?target_id=`            |
+| `SearchPosts(query)` (iterator)               | `GET  i.instagram.com/api/v1/fbsearch/top_serp/`         |
 | `SearchKeywordPosts(query)` (iterator)        | `POST /graphql/query` (initial + pagination documents)  |
 | `SearchAccounts(ctx, query)`                  | `GET  i.instagram.com/api/v1/fbsearch/account_serp/`     |
 | `SearchTypeaheadUsers(ctx, query, count)`     | `GET  i.instagram.com/api/v1/fbsearch/typeahead_stream/` |
 
 `Search` and `SearchUsers` remain the compatible REST entity searches.
-`SearchKeywordPosts` returns keyword-to-media results and transparently switches
+`SearchPosts` uses the mobile Top SERP and preserves its complete pagination
+state in the iterator's opaque cursor. `SearchKeywordPosts` uses the web
+keyword-to-media connection and transparently switches
 from the captured initial GraphQL document to the distinct pagination document.
 `SearchAccounts` returns the richer account SERP context (including friendship
 and social-context fields), while `SearchTypeaheadUsers` returns the lighter
@@ -217,19 +220,28 @@ checklist, rotating `doc_id` values, and scrubbed evidence are documented in the
 [search inventory](docs/inventory/search-graphql.md).
 
 ```go
-it := client.SearchKeywordPosts("specialty coffee").WithMaxPages(2)
+it := client.SearchPosts("specialty coffee").WithMaxPages(2)
 for it.Next(ctx) {
     post := it.Item()
     fmt.Printf("%s %s\n", post.Code, post.PermalinkURL)
 }
 if err := it.Err(); err != nil {
-    // Includes the existing auth/rate-limit sentinels and
-    // ErrUnexpectedResponse when a persisted GraphQL document rotates.
+    // Includes the existing auth/rate-limit/challenge sentinels.
     return err
+}
+
+// Persist after a page, then resume later without losing Top SERP state.
+cursor := it.Cursor()
+if cursor != "" {
+    resumed := client.SearchPosts("specialty coffee").WithCursor(cursor)
+    _ = resumed
 }
 
 accounts, err := client.SearchAccounts(ctx, "specialty coffee")
 ```
+
+Top SERP ranking is personalized and can change between runs. Durable watches
+should deduplicate results by `Post.PK` (falling back to `Post.Code`).
 
 ### Posts & feeds
 

@@ -41,6 +41,16 @@ func (it *Iterator[T]) WithMaxPages(n int) *Iterator[T] {
 	return it
 }
 
+// WithCursor starts the iterator from a cursor returned by Cursor. It must be
+// called before Next or Collect. Cursor values are endpoint-specific and
+// should be treated as opaque.
+func (it *Iterator[T]) WithCursor(cursor string) *Iterator[T] {
+	if it.pagesSeen == 0 && it.pageIdx == 0 {
+		it.cursor = cursor
+	}
+	return it
+}
+
 // Next advances to the next item, fetching a new page if necessary. Returns
 // false when there are no more items or an error occurred. Inspect Err.
 func (it *Iterator[T]) Next(ctx context.Context) bool {
@@ -110,8 +120,8 @@ func (it *Iterator[T]) Item() T {
 // Err returns the error that caused iteration to stop, if any.
 func (it *Iterator[T]) Err() error { return it.err }
 
-// Cursor returns the next page cursor (next_max_id). Useful for resuming
-// iteration in a later process.
+// Cursor returns the endpoint-specific next-page cursor. It is opaque and can
+// be passed to WithCursor on a fresh iterator to resume in a later process.
 func (it *Iterator[T]) Cursor() string { return it.cursor }
 
 // Collect drains the iterator into a slice. Stops at maxPages if set.
