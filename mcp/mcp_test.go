@@ -2,6 +2,7 @@ package mcp_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -422,6 +423,86 @@ func TestSearchReelsToolReturnsEmptyList(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestSearchReelsToolTruncatesFirstPageWithoutContinuation(t *testing.T) {
+	var requests int
+	client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Path != "/api/v1/fbsearch/reels_serp/" {
+			t.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		if got := req.URL.Query().Get("query"); got != "coffee" {
+			t.Errorf("query = %q, want normalized query coffee", got)
+		}
+		return mcpJSONResponse(req, http.StatusOK, `{
+			"reels_serp_modules":[{"clips":[
+				{"media":{"pk":"1","id":"1_9","code":"REEL1","media_type":2,"product_type":"clips","user":{"pk":"9","username":"creator"}}},
+				{"media":{"pk":"2","id":"2_9","code":"REEL2","media_type":2,"product_type":"clips","user":{"pk":"9","username":"creator"}}},
+				{"media":{"pk":"3","id":"3_9","code":"REEL3","media_type":2,"product_type":"clips","user":{"pk":"9","username":"creator"}}}
+			]}],
+			"has_more":true,
+			"reels_max_id":"UNPROVEN_CONTINUATION",
+			"rank_token":"UNBOUND_RANKING",
+			"status":"ok"
+		}`), nil
+	})
+
+	raw, err := findTool(t, "instagram_search_reels").Invoke(
+		context.Background(), client, json.RawMessage(`{"query":" coffee ","limit":2}`),
+	)
+	if err != nil {
+		t.Fatalf("invoke: %v", err)
+	}
+	page := raw.(mcptool.Page[*instagram.Post])
+	if len(page.Items) != 2 || page.Items[0].PK != "1" || page.Items[1].PK != "2" {
+		t.Fatalf("page items = %#v, want first two ranked reels", page.Items)
+	}
+	if !page.Truncated || page.NextCursor != "" {
+		t.Fatalf("terminal truncated page = %#v, want truncated with no continuation", page)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want one inventory-proven request", requests)
+	}
+}
+
+func TestSearchReelsToolRejectsCursorsWithoutHTTP(t *testing.T) {
+	legacyPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"offset":1}`))
+	tests := []struct {
+		name   string
+		query  string
+		cursor string
+	}{
+		{name: "same-query legacy replay", query: "coffee", cursor: "mcp-search-v1." + legacyPayload},
+		{name: "cross-query legacy replay", query: "tea", cursor: "mcp-search-v1." + legacyPayload},
+		{name: "malformed prefixed cursor", query: "coffee", cursor: "mcp-search-v1.not-base64!"},
+		{name: "arbitrary non-prefixed cursor", query: "coffee", cursor: "arbitrary-cursor"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return mcpJSONResponse(req, http.StatusOK, `{}`), nil
+			})
+			input, err := json.Marshal(map[string]any{
+				"query": tt.query, "limit": 1, "cursor": tt.cursor,
+			})
+			if err != nil {
+				t.Fatalf("marshal input: %v", err)
+			}
+
+			_, err = findTool(t, "instagram_search_reels").Invoke(context.Background(), client, input)
+			var toolErr *mcptool.Error
+			if !errors.As(err, &toolErr) || toolErr.Code != "invalid_input" || !strings.Contains(toolErr.Message, "cursor") {
+				t.Fatalf("error = %v, want structured invalid cursor error", err)
+			}
+			if requests != 0 {
+				t.Fatalf("cursor validation made %d HTTP requests, want zero", requests)
+			}
+		})
 	}
 }
 

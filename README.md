@@ -225,7 +225,10 @@ query-mismatched cursors fail before an HTTP request is made.
 needed by commenting helpers. It intentionally fetches only the first page: the
 live inventory proved response cursor fields but not their continuation request
 parameters. The iterator shape allows pagination to be added compatibly after a
-continuation request is captured.
+continuation request is captured. The `instagram_search_reels` MCP tool follows
+the same terminal contract: `limit` can truncate that first page, but the tool
+does not return a continuation cursor, and it rejects any supplied cursor before
+making an HTTP request.
 `SearchAccounts` returns the richer account SERP context (including friendship
 and social-context fields), while `SearchTypeaheadUsers` returns the lighter
 account suggestions shown during keyword entry. `KeywordTypeahead` is a compact
