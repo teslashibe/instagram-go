@@ -43,18 +43,37 @@ func searchPosts(ctx context.Context, c *instagram.Client, in SearchPostsInput) 
 type SearchReelsInput struct {
 	Query  string `json:"query" jsonschema:"description=keyword query used to find matching reels,required"`
 	Limit  int    `json:"limit,omitempty" jsonschema:"description=maximum reels to return,minimum=1,maximum=50,default=12"`
-	Cursor string `json:"cursor,omitempty" jsonschema:"description=opaque next_cursor from a previous response"`
+	Cursor string `json:"cursor,omitempty" jsonschema:"description=reserved for future continuation; currently must be omitted"`
 }
 
 func searchReels(ctx context.Context, c *instagram.Client, in SearchReelsInput) (any, error) {
-	if strings.TrimSpace(in.Query) == "" {
+	query := strings.TrimSpace(in.Query)
+	if query == "" {
 		return nil, invalidSearchQueryError()
 	}
-	page, err := collectSearchPage(ctx, c.SearchReels(in.Query), in.Cursor, in.Limit)
-	if err != nil {
+	// The inventory proves only the initial Reels request. Reject cursor input
+	// locally instead of replaying a live, potentially reordered first page.
+	if in.Cursor != "" {
+		return nil, invalidSearchCursorError("reels continuation is unavailable")
+	}
+
+	it := c.SearchReels(query).WithMaxPages(1)
+	items := make([]*instagram.Post, 0)
+	for it.Next(ctx) {
+		items = append(items, it.Item())
+	}
+	if err := it.Err(); err != nil {
 		return nil, searchToolError(err)
 	}
-	return page, nil
+
+	limit := effectiveLimit(in.Limit)
+	end := min(limit, len(items))
+	pageItems := make([]*instagram.Post, end)
+	copy(pageItems, items[:end])
+	return mcptool.Page[*instagram.Post]{
+		Items:     pageItems,
+		Truncated: end < len(items),
+	}, nil
 }
 
 const searchPageCursorPrefix = "mcp-search-v1."
@@ -176,7 +195,7 @@ var searchTools = []mcptool.Tool{
 	),
 	mcptool.Define[*instagram.Client, SearchReelsInput](
 		"instagram_search_reels",
-		"Search Instagram reels by keyword",
+		"Search the first page of Instagram reels by keyword without continuation",
 		"SearchReels",
 		searchReels,
 	),
