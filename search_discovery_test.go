@@ -395,36 +395,136 @@ func TestSearchKeywordPostsRejectsInvalidCursorsWithoutHTTP(t *testing.T) {
 	}
 }
 
-func TestSearchKeywordPostsClearsTerminalRelayCursor(t *testing.T) {
-	var requests int
-	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
-		requests++
-		body := []byte(`{
-			"data": {
-				"xdt_fbsearch__top_serp_graphql": {
-					"edges": [],
-					"page_info": {
-						"has_next_page": false,
-						"end_cursor": "TERMINAL_RELAY_CURSOR"
+func TestSearchKeywordPostsAcceptsExplicitEmptyTerminalCollections(t *testing.T) {
+	tests := []struct {
+		name  string
+		edges string
+	}{
+		{name: "edges", edges: `[]`},
+		{
+			name: "media-grid items",
+			edges: `[{
+				"node": {
+					"__typename": "XDTTopSerpMediaGridUnit",
+					"items": []
+				}
+			}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests int
+			body := []byte(`{
+				"data": {
+					"xdt_fbsearch__top_serp_graphql": {
+						"edges": ` + tt.edges + `,
+						"page_info": {
+							"has_next_page": false,
+							"end_cursor": "TERMINAL_RELAY_CURSOR"
+						}
 					}
 				}
-			}
-		}`)
-		return jsonResponse(req, http.StatusOK, body), nil
-	})
+			}`)
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return jsonResponse(req, http.StatusOK, body), nil
+			})
 
-	it := c.SearchKeywordPosts("coffee")
-	if it.Next(context.Background()) {
-		t.Fatal("unexpected post")
+			it := c.SearchKeywordPosts("coffee")
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if it.Err() != nil {
+				t.Fatalf("terminal page error = %v", it.Err())
+			}
+			if it.Cursor() != "" {
+				t.Fatalf("terminal cursor = %q, want empty", it.Cursor())
+			}
+			if requests != 1 {
+				t.Fatalf("got %d requests, want 1", requests)
+			}
+		})
 	}
-	if it.Err() != nil {
-		t.Fatalf("terminal page error = %v", it.Err())
+}
+
+func TestSearchKeywordPostsRejectsMissingEdges(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing",
+			body: `{"data":{"xdt_fbsearch__top_serp_graphql":{"page_info":{"has_next_page":false,"end_cursor":""}}}}`,
+		},
+		{
+			name: "null",
+			body: `{"data":{"xdt_fbsearch__top_serp_graphql":{"edges":null,"page_info":{"has_next_page":false,"end_cursor":""}}}}`,
+		},
 	}
-	if it.Cursor() != "" {
-		t.Fatalf("terminal cursor = %q, want empty", it.Cursor())
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests int
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return jsonResponse(req, http.StatusOK, []byte(tt.body)), nil
+			})
+
+			it := c.SearchKeywordPosts("coffee")
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if !errors.Is(it.Err(), instagram.ErrUnexpectedResponse) || !strings.Contains(it.Err().Error(), "edges") {
+				t.Fatalf("got %v, want edges ErrUnexpectedResponse", it.Err())
+			}
+			if requests != 1 {
+				t.Fatalf("got %d requests, want 1", requests)
+			}
+		})
 	}
-	if requests != 1 {
-		t.Fatalf("got %d requests, want 1", requests)
+}
+
+func TestSearchKeywordPostsRejectsMissingMediaGridItems(t *testing.T) {
+	tests := []struct {
+		name  string
+		items string
+	}{
+		{name: "missing"},
+		{name: "null", items: `,"items":null`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{
+				"data": {
+					"xdt_fbsearch__top_serp_graphql": {
+						"edges": [{
+							"node": {
+								"__typename": "XDTTopSerpMediaGridUnit"` + tt.items + `
+							}
+						}],
+						"page_info": {"has_next_page": false, "end_cursor": ""}
+					}
+				}
+			}`)
+			var requests int
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return jsonResponse(req, http.StatusOK, body), nil
+			})
+
+			it := c.SearchKeywordPosts("coffee")
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if !errors.Is(it.Err(), instagram.ErrUnexpectedResponse) || !strings.Contains(it.Err().Error(), "items") {
+				t.Fatalf("got %v, want items ErrUnexpectedResponse", it.Err())
+			}
+			if requests != 1 {
+				t.Fatalf("got %d requests, want 1", requests)
+			}
+		})
 	}
 }
 
@@ -465,51 +565,77 @@ func TestSearchKeywordPostsRejectsMissingPageInfo(t *testing.T) {
 	}
 }
 
-func TestSearchKeywordPostsSkipsEmptyIntermediateFixture(t *testing.T) {
-	emptyIntermediate := fixture(t, "keyword_search_graphql_empty_intermediate_response.json")
+func TestSearchKeywordPostsSkipsEmptyIntermediatePages(t *testing.T) {
+	emptyMediaGrid := []byte(`{
+		"data": {
+			"xdt_fbsearch__top_serp_graphql": {
+				"edges": [{
+					"node": {
+						"__typename": "XDTTopSerpMediaGridUnit",
+						"items": []
+					}
+				}],
+				"page_info": {
+					"has_next_page": true,
+					"end_cursor": "EMPTY_PAGE_END_CURSOR_REDACTED"
+				}
+			}
+		}
+	}`)
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "filtered non-media unit", body: fixture(t, "keyword_search_graphql_empty_intermediate_response.json")},
+		{name: "explicit empty media-grid items", body: emptyMediaGrid},
+	}
 	continuation := fixture(t, "keyword_search_graphql_pagination_response.json")
 
-	var requests int
-	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
-		requests++
-		body, err := io.ReadAll(req.Body)
-		if err != nil {
-			t.Fatalf("read form: %v", err)
-		}
-		form, err := url.ParseQuery(string(body))
-		if err != nil {
-			t.Fatalf("parse form: %v", err)
-		}
-		var variables map[string]any
-		if err := json.Unmarshal([]byte(form.Get("variables")), &variables); err != nil {
-			t.Fatalf("variables: %v", err)
-		}
-		switch requests {
-		case 1:
-			if form.Get("doc_id") != "26586987494245638" || variables["after"] != nil {
-				t.Fatalf("initial request = %#v, variables %#v", form, variables)
-			}
-			return jsonResponse(req, http.StatusOK, emptyIntermediate), nil
-		case 2:
-			if form.Get("doc_id") != "26577336451926911" || variables["after"] != "EMPTY_PAGE_END_CURSOR_REDACTED" {
-				t.Fatalf("continuation request = %#v, variables %#v", form, variables)
-			}
-			return jsonResponse(req, http.StatusOK, continuation), nil
-		default:
-			t.Fatalf("unexpected request %d", requests)
-			return nil, nil
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests int
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read form: %v", err)
+				}
+				form, err := url.ParseQuery(string(body))
+				if err != nil {
+					t.Fatalf("parse form: %v", err)
+				}
+				var variables map[string]any
+				if err := json.Unmarshal([]byte(form.Get("variables")), &variables); err != nil {
+					t.Fatalf("variables: %v", err)
+				}
+				switch requests {
+				case 1:
+					if form.Get("doc_id") != "26586987494245638" || variables["after"] != nil {
+						t.Fatalf("initial request = %#v, variables %#v", form, variables)
+					}
+					return jsonResponse(req, http.StatusOK, tt.body), nil
+				case 2:
+					if form.Get("doc_id") != "26577336451926911" || variables["after"] != "EMPTY_PAGE_END_CURSOR_REDACTED" {
+						t.Fatalf("continuation request = %#v, variables %#v", form, variables)
+					}
+					return jsonResponse(req, http.StatusOK, continuation), nil
+				default:
+					t.Fatalf("unexpected request %d", requests)
+					return nil, nil
+				}
+			})
 
-	posts, err := c.SearchKeywordPosts("coffee").Collect(context.Background())
-	if err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	if requests != 2 {
-		t.Fatalf("got %d requests, want 2", requests)
-	}
-	if len(posts) != 1 || posts[0].Code != "SECOND_SHORTCODE_REDACTED" {
-		t.Fatalf("posts = %#v, want continuation media", posts)
+			posts, err := c.SearchKeywordPosts("coffee").Collect(context.Background())
+			if err != nil {
+				t.Fatalf("Collect: %v", err)
+			}
+			if requests != 2 {
+				t.Fatalf("got %d requests, want 2", requests)
+			}
+			if len(posts) != 1 || posts[0].Code != "SECOND_SHORTCODE_REDACTED" {
+				t.Fatalf("posts = %#v, want continuation media", posts)
+			}
+		})
 	}
 }
 

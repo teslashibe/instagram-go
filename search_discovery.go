@@ -303,10 +303,10 @@ func (c *Client) KeywordTypeahead(ctx context.Context, query string) ([]string, 
 type keywordSearchGraphQLResponse struct {
 	Data *struct {
 		Connection *struct {
-			Edges []struct {
+			Edges *[]struct {
 				Node struct {
-					TypeName string            `json:"__typename"`
-					Items    []json.RawMessage `json:"items"`
+					TypeName string             `json:"__typename"`
+					Items    *[]json.RawMessage `json:"items"`
 				} `json:"node"`
 			} `json:"edges"`
 			PageInfo *struct {
@@ -334,12 +334,18 @@ func (r keywordSearchGraphQLResponse) page(op graphqlOperation) (Page[*Post], er
 	if r.Data == nil || r.Data.Connection == nil {
 		return Page[*Post]{}, fmt.Errorf("%w: missing keyword connection (%s)", ErrUnexpectedResponse, op.FriendlyName)
 	}
+	if r.Data.Connection.Edges == nil {
+		return Page[*Post]{}, fmt.Errorf("%w: keyword connection missing edges (%s)", ErrUnexpectedResponse, op.FriendlyName)
+	}
 	raws := make([]json.RawMessage, 0)
-	for _, edge := range r.Data.Connection.Edges {
+	for _, edge := range *r.Data.Connection.Edges {
 		if edge.Node.TypeName != "XDTTopSerpMediaGridUnit" {
 			continue
 		}
-		raws = append(raws, edge.Node.Items...)
+		if edge.Node.Items == nil {
+			return Page[*Post]{}, fmt.Errorf("%w: keyword media-grid unit missing items (%s)", ErrUnexpectedResponse, op.FriendlyName)
+		}
+		raws = append(raws, (*edge.Node.Items)...)
 	}
 	pageInfo := r.Data.Connection.PageInfo
 	if pageInfo == nil {
