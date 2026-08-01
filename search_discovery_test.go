@@ -427,6 +427,43 @@ func TestSearchKeywordPostsClearsTerminalRelayCursor(t *testing.T) {
 	}
 }
 
+func TestSearchKeywordPostsRejectsMissingPageInfo(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing",
+			body: `{"data":{"xdt_fbsearch__top_serp_graphql":{"edges":[]}}}`,
+		},
+		{
+			name: "null",
+			body: `{"data":{"xdt_fbsearch__top_serp_graphql":{"edges":[],"page_info":null}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var requests int
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return jsonResponse(req, http.StatusOK, []byte(tt.body)), nil
+			})
+
+			it := c.SearchKeywordPosts("coffee")
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if !errors.Is(it.Err(), instagram.ErrUnexpectedResponse) || !strings.Contains(it.Err().Error(), "page_info") {
+				t.Fatalf("got %v, want page_info ErrUnexpectedResponse", it.Err())
+			}
+			if requests != 1 {
+				t.Fatalf("got %d requests, want 1", requests)
+			}
+		})
+	}
+}
+
 func TestSearchKeywordPostsSkipsEmptyIntermediateFixture(t *testing.T) {
 	emptyIntermediate := fixture(t, "keyword_search_graphql_empty_intermediate_response.json")
 	continuation := fixture(t, "keyword_search_graphql_pagination_response.json")
