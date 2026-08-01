@@ -1040,6 +1040,66 @@ func TestSearchTypeaheadUsersMapsFixtureAndDefaultsCount(t *testing.T) {
 	}
 }
 
+func TestSearchTypeaheadUsersCombinesStreamedJSONObjects(t *testing.T) {
+	body := []byte(`{"users":[{"pk":"1","username":"first"}],"rank_token":"rank-1","status":"ok"}
+{"users":[{"pk":"2","username":"second"}],"rank_token":"rank-2","status":"ok"}`)
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(req, http.StatusOK, body), nil
+	})
+
+	result, err := c.SearchTypeaheadUsers(context.Background(), "coffee", 30)
+	if err != nil {
+		t.Fatalf("SearchTypeaheadUsers: %v", err)
+	}
+	if result.RankToken != "rank-2" || len(result.Users) != 2 {
+		t.Fatalf("unexpected streamed result: %#v", result)
+	}
+	if result.Users[0].Username != "first" || result.Users[1].Username != "second" {
+		t.Fatalf("unexpected streamed users: %#v", result.Users)
+	}
+}
+
+func TestSearchTypeaheadUsersClassifiesStreamedFailureChunks(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want error
+	}{
+		{
+			name: "login required",
+			body: `{"message":"login_required","status":"fail"}`,
+			want: instagram.ErrSessionExpired,
+		},
+		{
+			name: "validated partial data then require login",
+			body: "{\"users\":[{\"pk\":\"1\",\"username\":\"first\"}],\"status\":\"ok\"}\n" +
+				`{"require_login":true}`,
+			want: instagram.ErrRateLimited,
+		},
+		{
+			name: "challenge required",
+			body: `{"message":"challenge_required","status":"fail"}`,
+			want: instagram.ErrChallengeRequired,
+		},
+		{
+			name: "rate limited",
+			body: `{"message":"Please wait a few minutes before you try again.","status":"fail"}`,
+			want: instagram.ErrRateLimited,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(req, http.StatusOK, []byte(tt.body)), nil
+			})
+			_, err := c.SearchTypeaheadUsers(context.Background(), "coffee", 30)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestKeywordTypeaheadReturnsSuggestionStrings(t *testing.T) {
 	body := []byte(`{
 		"users": [

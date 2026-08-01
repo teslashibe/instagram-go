@@ -19,7 +19,7 @@ import "github.com/teslashibe/instagram-go"
 | Stories / highlights | ✅   | ✅    | ✅ (read)   |
 | Hashtags             | ✅   | ✅    | ✅ (read)   |
 | Locations            | ✅   | —     | ✅          |
-| Keyword discovery    | ✅   | —     | (fixtures)  |
+| Keyword discovery    | ✅   | —     | ✅          |
 | Topical explore      | ✅   | —     | (offline)   |
 | Home timeline        | ✅   | —     | (offline)   |
 
@@ -190,8 +190,10 @@ their existing web behavior.
 
 ## Endpoint catalogue
 
-All read endpoints below have been **end-to-end verified** with a live session.
-Write endpoints are implemented but not exercised in the integration suite.
+Read endpoints with enabled integration coverage have been **end-to-end
+verified** with a live session; surfaces marked `(offline)` above remain
+fixture-verified only. Write endpoints are implemented but not exercised in the
+integration suite.
 
 ### Profiles & search
 

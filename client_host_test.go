@@ -340,6 +340,39 @@ func TestRequireLoginFlagPreservesValidatedSessionRateLimitHandling(t *testing.T
 	}
 }
 
+func TestRequireLoginFlagOnSuccessfulResponseRateLimitsValidatedSession(t *testing.T) {
+	requestCount := 0
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		body := `{"status":"ok"}`
+		if requestCount == 2 {
+			body = `{"require_login":true}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
+	c := newHostTestClient(t, transport)
+	opts := &requestOptions{Host: requestHostAPI}
+	if err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
+		opts, nil); err != nil {
+		t.Fatalf("healthy request: %v", err)
+	}
+
+	err := c.doJSON(context.Background(), http.MethodGet, "/api/v1/fbsearch/top_serp/", nil,
+		opts, nil)
+	if !errors.Is(err, ErrRateLimited) || errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("error = %v, want ErrRateLimited and not ErrSessionExpired", err)
+	}
+	if c.RateLimit().CooldownReadUntil.IsZero() {
+		t.Fatal("validated require_login response did not trip read cooldown")
+	}
+}
+
 func TestExpiredSessionCueUsesStructuredValues(t *testing.T) {
 	tests := []struct {
 		name string

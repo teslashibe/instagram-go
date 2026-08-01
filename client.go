@@ -282,16 +282,16 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	// Authentication failures are sometimes returned with HTTP 200 and no
 	// status field. Detect structured session-expiry cues before accepting any
 	// response as healthy so those envelopes cannot silently validate a client.
-	// A bare require_login:true on 401/403 is ambiguous after the session has
-	// already been validated: Instagram also emits that envelope for soft
-	// blocks. Preserve the established rate-limit classification in that case,
-	// while treating explicit expiry messages and all 2xx cues as definitive.
+	// A bare require_login:true is ambiguous after the session has already been
+	// validated: Instagram also emits that envelope for soft blocks, including
+	// with HTTP 200. Preserve the established rate-limit classification in that
+	// case while treating explicit expiry messages as definitive.
 	sessionCues := decodeExpiredSessionCues(body)
 	c.validatedMu.Lock()
 	validated := c.validated
 	c.validatedMu.Unlock()
 	isAuthStatus := resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden
-	ambiguousValidatedLoginFlag := sessionCues.RequireLogin && isAuthStatus && validated
+	ambiguousValidatedLoginFlag := sessionCues.RequireLogin && validated && !sessionCues.ExplicitMessage
 	if sessionCues.ExplicitMessage || (sessionCues.RequireLogin && !ambiguousValidatedLoginFlag) {
 		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
@@ -307,6 +307,14 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 			return body, fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
 		}
 		return body, fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
+	}
+	if ambiguousValidatedLoginFlag {
+		cd := c.cooldownFor(isWrite)
+		c.tripCooldown(isWrite, cd, "require_login on validated session")
+		if isWrite {
+			return body, fmt.Errorf("%w: cooldown for %s (require_login)", ErrWriteSoftBlock, cd)
+		}
+		return body, fmt.Errorf("%w: cooldown for %s (require_login)", ErrRateLimited, cd)
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

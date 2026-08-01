@@ -1,12 +1,14 @@
 package instagram
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -250,21 +252,56 @@ func (c *Client) SearchTypeaheadUsers(ctx context.Context, query string, count i
 	q := mobileSearchQuery(query, "typeahead_search_page")
 	q.Set("context", "blended")
 	q.Set("count", strconv.Itoa(count))
-	var resp struct {
-		Users     []json.RawMessage `json:"users"`
-		RankToken string            `json:"rank_token"`
-	}
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/fbsearch/typeahead_stream/", q, mobileSearchRequestOptions(), &resp); err != nil {
-		return nil, err
-	}
-	if resp.Users == nil {
-		return nil, fmt.Errorf("%w: typeahead stream missing users", ErrUnexpectedResponse)
-	}
-	users, err := parseSearchUsers(resp.Users)
+	const path = "/api/v1/fbsearch/typeahead_stream/"
+	body, _, err := c.doRaw(ctx, http.MethodGet, path, q, mobileSearchRequestOptions())
 	if err != nil {
 		return nil, err
 	}
-	return &TypeaheadSearchResult{Users: users, RankToken: resp.RankToken}, nil
+	var (
+		rawUsers  []json.RawMessage
+		rankToken string
+		sawUsers  bool
+	)
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	for {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("%w: decoding %s: %v", ErrUnexpectedResponse, path, err)
+		}
+		if _, err := c.classifyResponse(&http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(raw)),
+		}, false, http.MethodGet, c.requestBaseURL(mobileSearchRequestOptions())+path); err != nil {
+			return nil, err
+		}
+		var chunk struct {
+			Users     []json.RawMessage `json:"users"`
+			RankToken string            `json:"rank_token"`
+		}
+		if err := json.Unmarshal(raw, &chunk); err != nil {
+			return nil, fmt.Errorf("%w: decoding %s: %v", ErrUnexpectedResponse, path, err)
+		}
+		if chunk.Users != nil {
+			sawUsers = true
+			rawUsers = append(rawUsers, chunk.Users...)
+		}
+		if chunk.RankToken != "" {
+			rankToken = chunk.RankToken
+		}
+	}
+	if !sawUsers {
+		return nil, fmt.Errorf("%w: typeahead stream missing users", ErrUnexpectedResponse)
+	}
+	users, err := parseSearchUsers(rawUsers)
+	if err != nil {
+		return nil, err
+	}
+	return &TypeaheadSearchResult{Users: users, RankToken: rankToken}, nil
 }
 
 // KeywordTypeahead returns lightweight suggestion strings for a partial
