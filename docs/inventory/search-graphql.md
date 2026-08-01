@@ -29,7 +29,10 @@ retry policy, cooldown circuit breaker, and auth/error sentinels.
 
 - [x] Mobile Top REST (`fbsearch/top_serp`) — `SearchPosts(query)` walks the
   captured media-grid layouts and preserves `next_max_id`, `reels_max_id`, and
-  `rank_token` in its opaque resumable iterator cursor.
+  `rank_token` in its version-2 opaque resumable iterator cursor. The cursor is
+  bound to the trimmed query, and invalid, unsupported, or query-mismatched
+  cursors fail locally before an HTTP request. Version-1 cursors are rejected
+  because they contain no query binding.
 - [x] Web keyword GraphQL initial operation — `SearchKeywordPosts(query)` uses
   `PolarisKeywordSearchExplorePageRelayQuery` for the first iterator page.
 - [x] Web keyword GraphQL continuation operation — the same iterator switches

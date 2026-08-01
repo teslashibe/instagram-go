@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const searchPostsCursorVersion = 1
+const searchPostsCursorVersion = 2
 
 // SearchPosts iterates over posts matching a free-text keyword from
 // Instagram's mobile Top SERP. Results are ranked and personalized by
@@ -17,8 +17,9 @@ const searchPostsCursorVersion = 1
 //
 // Endpoint: GET /api/v1/fbsearch/top_serp/
 //
-// Cursor returns an opaque continuation value containing all of the Top SERP
-// pagination state. Pass it to WithCursor on a fresh iterator to resume.
+// Cursor returns an opaque, query-bound continuation value containing all of
+// the Top SERP pagination state. Pass it to WithCursor on a fresh iterator to
+// resume the same normalized query.
 func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 	query = strings.TrimSpace(query)
 	seen := make(map[string]struct{})
@@ -32,6 +33,7 @@ func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 			initialCursor, initialCursorErr = encodeSearchPostsCursor(searchPostsCursor{
 				Version:   searchPostsCursorVersion,
 				RankToken: rankToken,
+				Query:     query,
 			})
 			if initialCursorErr != nil {
 				initialCursorErr = fmt.Errorf("instagram: SearchPosts: encode initial cursor: %w", initialCursorErr)
@@ -47,7 +49,7 @@ func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 			return Page[*Post]{}, initialCursorErr
 		}
 
-		state, err := decodeSearchPostsCursor(cursor)
+		state, err := decodeSearchPostsCursor(cursor, query)
 		if err != nil {
 			return Page[*Post]{}, fmt.Errorf("instagram: SearchPosts: %w", err)
 		}
@@ -105,6 +107,7 @@ func (c *Client) SearchPosts(query string) *Iterator[*Post] {
 			NextMaxID:  firstNonEmpty(resp.MediaGrid.NextMaxID, resp.NextMaxID),
 			ReelsMaxID: firstNonEmpty(resp.MediaGrid.ReelsMaxID, resp.ReelsMaxID, embeddedReelsMaxID),
 			RankToken:  firstNonEmpty(resp.MediaGrid.RankToken, resp.RankToken, state.RankToken),
+			Query:      query,
 		}
 		if next.NextMaxID == "" && next.ReelsMaxID == "" {
 			return Page[*Post]{}, fmt.Errorf("%w: Top SERP has more results without a continuation ID", ErrUnexpectedResponse)
@@ -204,6 +207,7 @@ type searchPostsCursor struct {
 	NextMaxID  string `json:"max_id,omitempty"`
 	ReelsMaxID string `json:"reels_max_id,omitempty"`
 	RankToken  string `json:"rank_token"`
+	Query      string `json:"query"`
 }
 
 func encodeSearchPostsCursor(cursor searchPostsCursor) (string, error) {
@@ -214,9 +218,9 @@ func encodeSearchPostsCursor(cursor searchPostsCursor) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func decodeSearchPostsCursor(encoded string) (searchPostsCursor, error) {
+func decodeSearchPostsCursor(encoded, query string) (searchPostsCursor, error) {
 	if encoded == "" {
-		return searchPostsCursor{Version: searchPostsCursorVersion}, nil
+		return searchPostsCursor{Version: searchPostsCursorVersion, Query: query}, nil
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
@@ -229,8 +233,14 @@ func decodeSearchPostsCursor(encoded string) (searchPostsCursor, error) {
 	// A rank-token-only cursor identifies the initial page. SearchPosts seeds
 	// iterators with one so consumers can replay a partially consumed first
 	// page without starting a different ranked search session.
-	if cursor.Version != searchPostsCursorVersion || cursor.RankToken == "" {
+	if cursor.Version != searchPostsCursorVersion {
+		return searchPostsCursor{}, fmt.Errorf("unsupported cursor version %d", cursor.Version)
+	}
+	if cursor.RankToken == "" || cursor.Query == "" {
 		return searchPostsCursor{}, fmt.Errorf("invalid cursor state")
+	}
+	if cursor.Query != query {
+		return searchPostsCursor{}, fmt.Errorf("cursor query mismatch")
 	}
 	return cursor, nil
 }
