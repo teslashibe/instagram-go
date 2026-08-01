@@ -206,6 +206,23 @@ func TestMobileRequestMapsExpiredSession2xxWithoutStatus(t *testing.T) {
 	}
 }
 
+func TestGraphQLAuthErrorDoesNotValidateClient(t *testing.T) {
+	transport := &recordingTransport{responses: map[string]string{
+		"www.instagram.test": `{"data":null,"errors":[{"message":"login_required"}]}`,
+	}}
+	c := newHostTestClient(t, transport)
+	err := c.doJSON(context.Background(), http.MethodPost, "/graphql/query", nil, nil, nil)
+	if !errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("error = %v, want ErrSessionExpired", err)
+	}
+	c.validatedMu.Lock()
+	validated := c.validated
+	c.validatedMu.Unlock()
+	if validated {
+		t.Fatal("GraphQL login-required envelope must not mark the client validated")
+	}
+}
+
 func TestMobileRequestMapsExpiredSessionHTTPError(t *testing.T) {
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -282,6 +299,10 @@ func TestExpiredSessionCueUsesStructuredValues(t *testing.T) {
 		{name: "error message", body: `{"error_message":"session expired"}`, want: true},
 		{name: "require login true", body: `{"require_login":true}`, want: true},
 		{name: "require login false", body: `{"require_login":false}`, want: false},
+		{name: "GraphQL login required", body: `{"errors":[{"message":"login_required"}]}`, want: true},
+		{name: "GraphQL login required after unrelated error", body: `{"errors":[{"message":"PersistedQueryNotFound"},{"message":"session expired"}]}`, want: true},
+		{name: "GraphQL persisted query error", body: `{"errors":[{"message":"PersistedQueryNotFound"}]}`, want: false},
+		{name: "GraphQL schema error", body: `{"errors":[{"message":"Cannot query field x on type Query"}]}`, want: false},
 		{name: "unrelated nested text", body: `{"detail":{"require_login":true}}`, want: false},
 		{name: "malformed", body: `{"require_login":`, want: false},
 	}
