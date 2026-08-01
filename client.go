@@ -310,6 +310,12 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// GraphQL reports request failures in a successful HTTP envelope. Classify
+		// every non-empty errors array before accepting the response as proof of a
+		// healthy session, including envelopes that also contain partial data.
+		if graphqlErr := c.classifyGraphQLErrors(body, resp.StatusCode, method, fullURL, isWrite); graphqlErr != nil {
+			return body, graphqlErr
+		}
 		// Instagram sometimes returns 200 with {"message":"...","status":"fail"}.
 		if shaped := decodeStatusFail(body); shaped != nil {
 			return body, c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
@@ -412,8 +418,16 @@ func isExpiredSessionMessage(message string) bool {
 		strings.Contains(message, "require_login") || strings.Contains(message, "session expired")
 }
 
-func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL string, body []byte, isWrite bool) error {
-	msg := strings.ToLower(shaped.Message)
+func (c *Client) classifyGraphQLErrors(body []byte, status int, method, fullURL string, isWrite bool) error {
+	var envelope struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Errors) == 0 {
+		return nil
+	}
+
 	apiErr := &APIError{
 		StatusCode: status,
 		Status:     http.StatusText(status),
@@ -421,40 +435,77 @@ func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL stri
 		URL:        fullURL,
 		Body:       string(body),
 	}
+	for _, graphqlError := range envelope.Errors {
+		if mapped, ok := c.mapKnownMessage(graphqlError.Message, apiErr, isWrite); ok {
+			return mapped
+		}
+	}
+
+	detail := "GraphQL error"
+	for _, graphqlError := range envelope.Errors {
+		if message := strings.TrimSpace(graphqlError.Message); message != "" {
+			detail = message
+			break
+		}
+	}
+	return fmt.Errorf("%w: %s (%s)", ErrUnexpectedResponse, detail, apiErr.Error())
+}
+
+func (c *Client) mapMessage(shaped *statusFail, status int, method, fullURL string, body []byte, isWrite bool) error {
+	apiErr := &APIError{
+		StatusCode: status,
+		Status:     http.StatusText(status),
+		Method:     method,
+		URL:        fullURL,
+		Body:       string(body),
+	}
+	if mapped, ok := c.mapKnownMessage(shaped.Message, apiErr, isWrite); ok {
+		return mapped
+	}
+	return apiErr
+}
+
+func (c *Client) mapKnownMessage(message string, apiErr *APIError, isWrite bool) (error, bool) {
+	msg := strings.ToLower(message)
 	switch {
 	case strings.Contains(msg, "login_required") || strings.Contains(msg, "login required") ||
 		strings.Contains(msg, "require_login") || strings.Contains(msg, "session expired"):
-		return fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error())
+		return fmt.Errorf("%w: %s", ErrSessionExpired, apiErr.Error()), true
 	case strings.Contains(msg, "checkpoint") || strings.Contains(msg, "challenge_required"):
-		return fmt.Errorf("%w: %s", ErrChallengeRequired, apiErr.Error())
-	case strings.Contains(msg, "login_required") || strings.Contains(msg, "login required"):
-		return fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
+		return fmt.Errorf("%w: %s", ErrChallengeRequired, apiErr.Error()), true
 	case strings.Contains(msg, "csrf"):
-		return fmt.Errorf("%w: %s", ErrCSRF, apiErr.Error())
+		return fmt.Errorf("%w: %s", ErrCSRF, apiErr.Error()), true
 	case strings.Contains(msg, "useragent"):
-		return fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error())
-	case strings.Contains(msg, "wait a few minutes") || strings.Contains(msg, "try again later"):
+		return fmt.Errorf("%w: %s", ErrInvalidAuth, apiErr.Error()), true
+	case isRateLimitMessage(msg):
 		cd := c.cooldownFor(isWrite)
 		c.tripCooldown(isWrite, cd, "wait-a-few-minutes")
-		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error())
+		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error()), true
 	case strings.Contains(msg, "media not found") || strings.Contains(msg, "media_not_found"):
-		return fmt.Errorf("%w: %s", ErrMediaUnavailable, apiErr.Error())
+		return fmt.Errorf("%w: %s", ErrMediaUnavailable, apiErr.Error()), true
 	case strings.Contains(msg, "user not found") || strings.Contains(msg, "user_not_found"):
-		return fmt.Errorf("%w: %s", ErrNotFound, apiErr.Error())
+		return fmt.Errorf("%w: %s", ErrNotFound, apiErr.Error()), true
 	case strings.Contains(msg, "private"):
-		return fmt.Errorf("%w: %s", ErrPrivateAccount, apiErr.Error())
-	case strings.Contains(msg, "feedback_required"):
+		return fmt.Errorf("%w: %s", ErrPrivateAccount, apiErr.Error()), true
+	case strings.Contains(msg, "feedback_required") || strings.Contains(msg, "feedback required"):
 		cd := c.cooldownFor(isWrite)
 		if cd < 5*time.Minute {
 			cd = 5 * time.Minute
 		}
 		c.tripCooldown(isWrite, cd, "feedback_required")
 		if isWrite {
-			return fmt.Errorf("%w: cooldown for %s (%s)", ErrWriteSoftBlock, cd, apiErr.Error())
+			return fmt.Errorf("%w: cooldown for %s (%s)", ErrWriteSoftBlock, cd, apiErr.Error()), true
 		}
-		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error())
+		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error()), true
 	}
-	return apiErr
+	return nil, false
+}
+
+func isRateLimitMessage(message string) bool {
+	return strings.Contains(message, "wait a few minutes") || strings.Contains(message, "try again later") ||
+		strings.Contains(message, "rate limit") || strings.Contains(message, "rate_limit") ||
+		strings.Contains(message, "rate-limit") || strings.Contains(message, "too many requests") ||
+		strings.Contains(message, "throttl")
 }
 
 // statusFail is the standard Instagram failure envelope.
