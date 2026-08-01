@@ -378,6 +378,9 @@ func decodeExpiredSessionCues(body []byte) expiredSessionCues {
 		Message      string          `json:"message"`
 		ErrorMessage string          `json:"error_message"`
 		RequireLogin json.RawMessage `json:"require_login"`
+		Errors       []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return expiredSessionCues{}
@@ -388,6 +391,12 @@ func decodeExpiredSessionCues(body []byte) expiredSessionCues {
 	var requireLogin bool
 	if len(envelope.RequireLogin) != 0 && json.Unmarshal(envelope.RequireLogin, &requireLogin) == nil {
 		cues.RequireLogin = requireLogin
+	}
+	for _, graphqlError := range envelope.Errors {
+		if isExpiredSessionMessage(graphqlError.Message) {
+			cues.ExplicitMessage = true
+			break
+		}
 	}
 	return cues
 }

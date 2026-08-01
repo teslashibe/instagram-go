@@ -941,15 +941,39 @@ func TestDiscoveryMethodsParticipateInReadRateLimit(t *testing.T) {
 }
 
 func TestSearchKeywordPostsMapsGraphQLErrors(t *testing.T) {
-	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
-		return jsonResponse(req, http.StatusOK, []byte(`{"data":null,"errors":[{"message":"PersistedQueryNotFound"}]}`)), nil
-	})
-	it := c.SearchKeywordPosts("coffee")
-	if it.Next(context.Background()) {
-		t.Fatal("unexpected post")
+	tests := []struct {
+		name       string
+		message    string
+		want       error
+		wantDetail string
+	}{
+		{name: "login required", message: "login_required", want: instagram.ErrSessionExpired},
+		{name: "persisted query", message: "PersistedQueryNotFound", want: instagram.ErrUnexpectedResponse, wantDetail: "PersistedQueryNotFound"},
+		{name: "schema", message: "Cannot query field x on type Query", want: instagram.ErrUnexpectedResponse, wantDetail: "Cannot query field x"},
 	}
-	if !errors.Is(it.Err(), instagram.ErrUnexpectedResponse) || !strings.Contains(it.Err().Error(), "PersistedQueryNotFound") {
-		t.Fatalf("got %v, want ErrUnexpectedResponse with GraphQL detail", it.Err())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"data":   nil,
+				"errors": []map[string]string{{"message": tt.message}},
+			})
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				return jsonResponse(req, http.StatusOK, body), nil
+			})
+			it := c.SearchKeywordPosts("coffee")
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if !errors.Is(it.Err(), tt.want) {
+				t.Fatalf("got %v, want errors.Is(%v)", it.Err(), tt.want)
+			}
+			if tt.wantDetail != "" && !strings.Contains(it.Err().Error(), tt.wantDetail) {
+				t.Fatalf("got %v, want GraphQL detail %q", it.Err(), tt.wantDetail)
+			}
+		})
 	}
 }
 
