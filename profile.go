@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // GetProfile fetches a user's full profile by username.
@@ -73,10 +74,10 @@ func (c *Client) currentUser(ctx context.Context) (*User, error) {
 func parseUser(raw json.RawMessage) (*User, error) {
 	// Local view — also captures the alternate ID fields Instagram uses.
 	var aux struct {
-		PK     any    `json:"pk"`
-		PKID   string `json:"pk_id"`
-		ID     any    `json:"id"`
-		UserID any    `json:"user_id"`
+		PK     json.RawMessage `json:"pk"`
+		PKID   json.RawMessage `json:"pk_id"`
+		ID     json.RawMessage `json:"id"`
+		UserID json.RawMessage `json:"user_id"`
 
 		Username       string `json:"username"`
 		FullName       string `json:"full_name"`
@@ -210,6 +211,24 @@ func stringifyID(vals ...any) string {
 		case json.Number:
 			if s := t.String(); s != "" && s != "0" {
 				return s
+			}
+		case json.RawMessage:
+			raw := strings.TrimSpace(string(t))
+			if raw == "" || raw == "null" {
+				continue
+			}
+			if raw[0] == '"' {
+				var s string
+				if err := json.Unmarshal(t, &s); err == nil && s != "" {
+					return s
+				}
+				continue
+			}
+			var n json.Number
+			if err := json.Unmarshal(t, &n); err == nil {
+				if s := n.String(); s != "" && s != "0" {
+					return s
+				}
 			}
 		case int:
 			if t != 0 {

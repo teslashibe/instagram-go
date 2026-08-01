@@ -8,8 +8,8 @@
       "clips": [
         {
           "media": {
-            "id": "REEL_MEDIA_PK_REDACTED_OWNER_PK_REDACTED",
-            "pk": "REEL_MEDIA_PK_REDACTED",
+            "id": "3925989427651196285_4635605442",
+            "pk": 3925989427651196285,
             "code": "REEL_SHORTCODE_REDACTED",
             "media_type": 2,
             "product_type": "clips",
@@ -18,7 +18,7 @@
               "text": "COFFEE_REEL_CAPTION_REDACTED"
             },
             "user": {
-              "pk": "REEL_OWNER_PK_REDACTED",
+              "pk": 4635605442,
               "username": "coffee_reel_creator_redacted"
             },
             "play_count": 123,
