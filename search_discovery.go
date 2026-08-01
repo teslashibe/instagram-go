@@ -321,12 +321,18 @@ type keywordSearchGraphQLResponse struct {
 }
 
 func (r keywordSearchGraphQLResponse) page(op graphqlOperation) (Page[*Post], error) {
-	if r.Data == nil || r.Data.Connection == nil {
-		detail := "missing keyword connection"
-		if len(r.Errors) > 0 && r.Errors[0].Message != "" {
-			detail = r.Errors[0].Message
+	if len(r.Errors) > 0 {
+		detail := "GraphQL error"
+		for _, graphqlError := range r.Errors {
+			if message := strings.TrimSpace(graphqlError.Message); message != "" {
+				detail = message
+				break
+			}
 		}
 		return Page[*Post]{}, fmt.Errorf("%w: %s (%s)", ErrUnexpectedResponse, detail, op.FriendlyName)
+	}
+	if r.Data == nil || r.Data.Connection == nil {
+		return Page[*Post]{}, fmt.Errorf("%w: missing keyword connection (%s)", ErrUnexpectedResponse, op.FriendlyName)
 	}
 	if r.Data.Connection.Edges == nil {
 		return Page[*Post]{}, fmt.Errorf("%w: keyword connection missing edges (%s)", ErrUnexpectedResponse, op.FriendlyName)

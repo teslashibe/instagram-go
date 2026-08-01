@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -152,7 +153,7 @@ func TestClientRoutesWebAndMobileRequestsWithSurfaceHeaders(t *testing.T) {
 
 func TestGraphQLDefaultsToWWWHostAndAllowsTransportHeaders(t *testing.T) {
 	transport := &recordingTransport{responses: map[string]string{
-		"www.instagram.test": `{"data":{"xdt_fbsearch__top_serp_graphql":{"edges":[]}}}`,
+		"www.instagram.test": `{"data":{"xdt_fbsearch__top_serp_graphql":{"edges":[]}},"errors":[]}`,
 	}}
 	c := newHostTestClient(t, transport)
 	form := url.Values{"doc_id": {"123"}, "variables": {`{"query":"coffee"}`}}
@@ -163,6 +164,12 @@ func TestGraphQLDefaultsToWWWHostAndAllowsTransportHeaders(t *testing.T) {
 		},
 	}, nil); err != nil {
 		t.Fatalf("GraphQL request: %v", err)
+	}
+	c.validatedMu.Lock()
+	validated := c.validated
+	c.validatedMu.Unlock()
+	if !validated {
+		t.Fatal("GraphQL envelope with an empty errors array must mark the client validated")
 	}
 
 	req := transport.onlyForHost(t, "www.instagram.test")
@@ -220,6 +227,50 @@ func TestGraphQLAuthErrorDoesNotValidateClient(t *testing.T) {
 	c.validatedMu.Unlock()
 	if validated {
 		t.Fatal("GraphQL login-required envelope must not mark the client validated")
+	}
+}
+
+func TestGraphQLErrorsAreClassifiedBeforeClientValidation(t *testing.T) {
+	tests := []struct {
+		name         string
+		message      string
+		want         error
+		wantDetail   string
+		wantCooldown bool
+	}{
+		{name: "challenge required", message: "challenge_required", want: ErrChallengeRequired},
+		{name: "checkpoint", message: "checkpoint_required", want: ErrChallengeRequired},
+		{name: "rate limit", message: "Rate limit exceeded", want: ErrRateLimited, wantCooldown: true},
+		{name: "feedback", message: "feedback_required", want: ErrRateLimited, wantCooldown: true},
+		{name: "persisted query", message: "PersistedQueryNotFound", want: ErrUnexpectedResponse, wantDetail: "PersistedQueryNotFound"},
+		{name: "schema", message: "Cannot query field x on type Query", want: ErrUnexpectedResponse, wantDetail: "Cannot query field x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"data":{"partial":true},"errors":[{"message":"` + tt.message + `"}]}`
+			transport := &recordingTransport{responses: map[string]string{
+				"www.instagram.test": body,
+			}}
+			c := newHostTestClient(t, transport)
+			err := c.doJSON(context.Background(), http.MethodPost, "/graphql/query", nil, nil, nil)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want errors.Is(%v)", err, tt.want)
+			}
+			if tt.wantDetail != "" && !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("error = %v, want detail %q", err, tt.wantDetail)
+			}
+			if got := c.RateLimit().CooldownReadUntil; tt.wantCooldown && !got.After(time.Now()) {
+				t.Fatalf("read cooldown = %v, want future deadline", got)
+			} else if !tt.wantCooldown && !got.IsZero() {
+				t.Fatalf("read cooldown = %v, want zero", got)
+			}
+			c.validatedMu.Lock()
+			validated := c.validated
+			c.validatedMu.Unlock()
+			if validated {
+				t.Fatal("failed GraphQL envelope must not mark the client validated")
+			}
+		})
 	}
 }
 

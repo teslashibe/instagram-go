@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	instagram "github.com/teslashibe/instagram-go"
 )
@@ -1179,19 +1180,36 @@ func TestDiscoveryMethodsParticipateInReadRateLimit(t *testing.T) {
 
 func TestSearchKeywordPostsMapsGraphQLErrors(t *testing.T) {
 	tests := []struct {
-		name       string
-		message    string
-		want       error
-		wantDetail string
+		name         string
+		message      string
+		partialData  bool
+		want         error
+		wantDetail   string
+		wantCooldown bool
 	}{
 		{name: "login required", message: "login_required", want: instagram.ErrSessionExpired},
-		{name: "persisted query", message: "PersistedQueryNotFound", want: instagram.ErrUnexpectedResponse, wantDetail: "PersistedQueryNotFound"},
-		{name: "schema", message: "Cannot query field x on type Query", want: instagram.ErrUnexpectedResponse, wantDetail: "Cannot query field x"},
+		{name: "challenge", message: "challenge_required", want: instagram.ErrChallengeRequired},
+		{name: "rate limit", message: "Please wait a few minutes before you try again.", want: instagram.ErrRateLimited, wantCooldown: true},
+		{name: "feedback", message: "feedback_required", want: instagram.ErrRateLimited, wantCooldown: true},
+		{name: "persisted query with partial data", message: "PersistedQueryNotFound", partialData: true, want: instagram.ErrUnexpectedResponse, wantDetail: "PersistedQueryNotFound"},
+		{name: "schema with partial data", message: "Cannot query field x on type Query", partialData: true, want: instagram.ErrUnexpectedResponse, wantDetail: "Cannot query field x"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var data any
+			if tt.partialData {
+				data = map[string]any{
+					"xdt_fbsearch__top_serp_graphql": map[string]any{
+						"edges": []any{},
+						"page_info": map[string]any{
+							"has_next_page": false,
+							"end_cursor":    "",
+						},
+					},
+				}
+			}
 			body, err := json.Marshal(map[string]any{
-				"data":   nil,
+				"data":   data,
 				"errors": []map[string]string{{"message": tt.message}},
 			})
 			if err != nil {
@@ -1209,6 +1227,9 @@ func TestSearchKeywordPostsMapsGraphQLErrors(t *testing.T) {
 			}
 			if tt.wantDetail != "" && !strings.Contains(it.Err().Error(), tt.wantDetail) {
 				t.Fatalf("got %v, want GraphQL detail %q", it.Err(), tt.wantDetail)
+			}
+			if got := c.RateLimit().CooldownReadUntil; tt.wantCooldown && !got.After(time.Now()) {
+				t.Fatalf("read cooldown = %v, want future deadline", got)
 			}
 		})
 	}
