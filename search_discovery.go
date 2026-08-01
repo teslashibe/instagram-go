@@ -309,7 +309,7 @@ type keywordSearchGraphQLResponse struct {
 					Items    []json.RawMessage `json:"items"`
 				} `json:"node"`
 			} `json:"edges"`
-			PageInfo struct {
+			PageInfo *struct {
 				HasNextPage bool   `json:"has_next_page"`
 				EndCursor   string `json:"end_cursor"`
 			} `json:"page_info"`
@@ -336,6 +336,9 @@ func (r keywordSearchGraphQLResponse) page(op graphqlOperation) (Page[*Post], er
 		raws = append(raws, edge.Node.Items...)
 	}
 	pageInfo := r.Data.Connection.PageInfo
+	if pageInfo == nil {
+		return Page[*Post]{}, fmt.Errorf("%w: keyword connection missing page_info (%s)", ErrUnexpectedResponse, op.FriendlyName)
+	}
 	if pageInfo.HasNextPage && pageInfo.EndCursor == "" {
 		return Page[*Post]{}, fmt.Errorf("%w: keyword connection has next page without end cursor (%s)", ErrUnexpectedResponse, op.FriendlyName)
 	}
