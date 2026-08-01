@@ -153,7 +153,7 @@ func TestSearchPostsToolReturnsMediaIDsAndResumesCursor(t *testing.T) {
 			return mcpJSONResponse(req, http.StatusOK, `{
 				"media_grid": {
 					"sections": [{"layout_content":{"medias":[{"media":{
-						"pk":"101","id":"101_9","code":"FIRST101","media_type":1,
+						"pk":3925989427651196285,"id":"3925989427651196285_9","code":"FIRST101","media_type":1,
 						"user":{"pk":"9","username":"creator"}
 					}}]}}],
 					"has_more":true,
@@ -191,7 +191,7 @@ func TestSearchPostsToolReturnsMediaIDsAndResumesCursor(t *testing.T) {
 	if !ok {
 		t.Fatalf("first page type = %T", firstRaw)
 	}
-	if len(first.Items) != 1 || first.Items[0].PK != "101" || first.Items[0].ID != "101_9" || first.Items[0].Code != "FIRST101" {
+	if len(first.Items) != 1 || first.Items[0].PK != "3925989427651196285" || first.Items[0].ID != "3925989427651196285_9" || first.Items[0].Code != "FIRST101" {
 		t.Fatalf("first page media identifiers = %#v", first.Items)
 	}
 	if first.NextCursor == "" {
@@ -201,7 +201,7 @@ func TestSearchPostsToolReturnsMediaIDsAndResumesCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal first page: %v", err)
 	}
-	if !strings.Contains(string(encoded), `"pk":"101"`) || !strings.Contains(string(encoded), `"next_cursor":`) {
+	if !strings.Contains(string(encoded), `"pk":"3925989427651196285"`) || !strings.Contains(string(encoded), `"next_cursor":`) {
 		t.Fatalf("first page JSON lacks media ID or cursor: %s", encoded)
 	}
 

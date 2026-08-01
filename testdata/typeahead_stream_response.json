@@ -2,8 +2,8 @@
   "rank_token": "TYPEAHEAD_RANK_TOKEN_REDACTED",
   "users": [
     {
-      "id": "TYPEAHEAD_ID_REDACTED",
-      "pk": "TYPEAHEAD_PK_REDACTED",
+      "id": "4635605442",
+      "pk": 4635605442,
       "username": "coffee_typeahead_redacted",
       "full_name": "COFFEE_TYPEAHEAD_REDACTED",
       "profile_pic_url": "https://example.invalid/profile/typeahead.jpg"

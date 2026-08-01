@@ -157,7 +157,7 @@ func TestSearchReelsMapsFixtureAndMobileContract(t *testing.T) {
 		t.Fatalf("got %d posts, want 1", len(posts))
 	}
 	post := posts[0]
-	if post.PK != "REEL_MEDIA_PK_REDACTED" || post.Code != "REEL_SHORTCODE_REDACTED" || post.MediaType != instagram.MediaTypeVideo || post.ProductType != "clips" {
+	if post.PK != "3925989427651196285" || post.Code != "REEL_SHORTCODE_REDACTED" || post.MediaType != instagram.MediaTypeVideo || post.ProductType != "clips" {
 		t.Fatalf("unexpected reel mapping: %#v", post)
 	}
 	if post.Owner == nil || post.Owner.Username != "coffee_reel_creator_redacted" || post.PlayCount != 123 || len(post.VideoVersions) != 1 {
@@ -376,7 +376,7 @@ func TestSearchPostsMapsTopSERPLayoutsAndResumesCursor(t *testing.T) {
 			body := []byte(`{
 				"media_grid": {
 					"sections": [
-						{"layout_content":{"medias":[{"media":{"pk":"101","id":"101_9","code":"PHOTO101","media_type":1,"product_type":"feed","caption":{"text":"first #billing"},"user":{"pk":"9","username":"creator"}}},{"media":{"pk":"999","id":"999_9","media_type":1,"user":{"pk":"9","username":"creator"}}}]}},
+						{"layout_content":{"medias":[{"media":{"pk":3925989427651196285,"id":"3925989427651196285_9","code":"PHOTO101","media_type":1,"product_type":"feed","caption":{"text":"first #billing"},"user":{"pk":9,"username":"creator"}}},{"media":{"pk":"999","id":"999_9","media_type":1,"user":{"pk":"9","username":"creator"}}}]}},
 						{"layout_content":{"fill_items":[{"media":{"pk":"102","id":"102_9","code":"REEL102","media_type":2,"product_type":"clips","caption":{"text":"second"},"user":{"pk":"9","username":"creator"}}}]}},
 						{"layout_content":{"one_by_two_item":{"media":{"pk":"103","id":"103_9","code":"PHOTO103","media_type":1,"user":{"pk":"9","username":"creator"}},"clips":{"items":[{"media":{"pk":"104","id":"104_9","code":"REEL104","media_type":2,"product_type":"clips","user":{"pk":"9","username":"creator"}}},{"media":{"pk":"102","id":"102_9","code":"REEL102","media_type":2,"product_type":"clips"}}]}}}}
 					],
@@ -417,6 +417,9 @@ func TestSearchPostsMapsTopSERPLayoutsAndResumesCursor(t *testing.T) {
 	if firstPage[0].Caption != "first #billing" || !reflect.DeepEqual(firstPage[0].Hashtags, []string{"billing"}) {
 		t.Fatalf("caption mapping = %#v", firstPage[0])
 	}
+	if firstPage[0].PK != "3925989427651196285" {
+		t.Fatalf("Post.PK = %q, want exact live numeric ID", firstPage[0].PK)
+	}
 	if firstPage[1].PermalinkURL != "https://www.instagram.com/reel/REEL102/" {
 		t.Fatalf("reel permalink = %q", firstPage[1].PermalinkURL)
 	}
@@ -438,6 +441,64 @@ func TestSearchPostsMapsTopSERPLayoutsAndResumesCursor(t *testing.T) {
 	}
 	if second.Cursor() != "" {
 		t.Fatalf("terminal cursor = %q, want empty", second.Cursor())
+	}
+}
+
+func TestSearchPostPKRemainsExactInDownstreamLikePath(t *testing.T) {
+	const mediaPK = "3925989427651196285"
+	var searchRequests, likeRequests int
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/v1/fbsearch/top_serp/":
+			searchRequests++
+			body := []byte(`{
+				"media_grid": {
+					"sections": [{"layout_content":{"medias":[{"media":{
+						"pk":3925989427651196285,
+						"id":"3925989427651196285_4635605442",
+						"code":"LIVEPK",
+						"media_type":1
+					}}]}}],
+					"has_more":false
+				},
+				"status":"ok"
+			}`)
+			return jsonResponse(req, http.StatusOK, body), nil
+		case "/api/v1/media/" + mediaPK + "/like/":
+			likeRequests++
+			if req.Method != http.MethodPost {
+				t.Errorf("like method = %s, want POST", req.Method)
+			}
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read like form: %v", err)
+			}
+			form, err := url.ParseQuery(string(body))
+			if err != nil {
+				t.Fatalf("parse like form: %v", err)
+			}
+			if form.Get("media_id") != mediaPK {
+				t.Errorf("media_id = %q, want %q", form.Get("media_id"), mediaPK)
+			}
+			return jsonResponse(req, http.StatusOK, []byte(`{"status":"ok"}`)), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})
+
+	posts, err := c.SearchPosts("coffee").Collect(context.Background())
+	if err != nil {
+		t.Fatalf("SearchPosts: %v", err)
+	}
+	if len(posts) != 1 || posts[0].PK != mediaPK {
+		t.Fatalf("search posts = %#v, want exact PK %q", posts, mediaPK)
+	}
+	if err := c.LikePost(context.Background(), posts[0].PK); err != nil {
+		t.Fatalf("LikePost: %v", err)
+	}
+	if searchRequests != 1 || likeRequests != 1 {
+		t.Fatalf("search requests = %d, like requests = %d", searchRequests, likeRequests)
 	}
 }
 
@@ -558,7 +619,7 @@ func TestSearchAccountsMapsFixtureAndMobileContract(t *testing.T) {
 		t.Fatalf("got %d users", len(result.Users))
 	}
 	u := result.Users[0]
-	if u.ID != "ACCOUNT_PK_ID_REDACTED" || u.Username != "coffee_account_redacted" || !u.IsVerified || !u.IsSearchBoosted {
+	if u.ID != "40054486512" || u.Username != "coffee_account_redacted" || !u.IsVerified || !u.IsSearchBoosted {
 		t.Fatalf("unexpected user mapping: %#v", u)
 	}
 	if u.SearchSERPType != "user" || u.SearchSocialContext == "" || u.FriendshipStatus == nil || !u.FriendshipStatus.FollowedBy {
@@ -586,7 +647,7 @@ func TestSearchTypeaheadUsersMapsFixtureAndDefaultsCount(t *testing.T) {
 	if result.RankToken != "TYPEAHEAD_RANK_TOKEN_REDACTED" || len(result.Users) != 1 {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if result.Users[0].ID != "TYPEAHEAD_PK_REDACTED" || result.Users[0].Username != "coffee_typeahead_redacted" {
+	if result.Users[0].ID != "4635605442" || result.Users[0].Username != "coffee_typeahead_redacted" {
 		t.Fatalf("unexpected user: %#v", result.Users[0])
 	}
 }

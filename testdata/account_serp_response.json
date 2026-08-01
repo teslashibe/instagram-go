@@ -6,9 +6,9 @@
   "rank_token": "RANK_TOKEN_REDACTED",
   "users": [
     {
-      "id": "ACCOUNT_ID_REDACTED",
-      "pk": "ACCOUNT_PK_REDACTED",
-      "pk_id": "ACCOUNT_PK_ID_REDACTED",
+      "id": "40054486512",
+      "pk": 40054486512,
+      "pk_id": 40054486512,
       "username": "coffee_account_redacted",
       "full_name": "COFFEE_ACCOUNT_REDACTED",
       "profile_pic_url": "https://example.invalid/profile/account.jpg",
