@@ -394,6 +394,39 @@ func TestSearchKeywordPostsRejectsInvalidCursorsWithoutHTTP(t *testing.T) {
 	}
 }
 
+func TestSearchKeywordPostsClearsTerminalRelayCursor(t *testing.T) {
+	var requests int
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		body := []byte(`{
+			"data": {
+				"xdt_fbsearch__top_serp_graphql": {
+					"edges": [],
+					"page_info": {
+						"has_next_page": false,
+						"end_cursor": "TERMINAL_RELAY_CURSOR"
+					}
+				}
+			}
+		}`)
+		return jsonResponse(req, http.StatusOK, body), nil
+	})
+
+	it := c.SearchKeywordPosts("coffee")
+	if it.Next(context.Background()) {
+		t.Fatal("unexpected post")
+	}
+	if it.Err() != nil {
+		t.Fatalf("terminal page error = %v", it.Err())
+	}
+	if it.Cursor() != "" {
+		t.Fatalf("terminal cursor = %q, want empty", it.Cursor())
+	}
+	if requests != 1 {
+		t.Fatalf("got %d requests, want 1", requests)
+	}
+}
+
 func TestSearchKeywordPostsSkipsEmptyIntermediateFixture(t *testing.T) {
 	emptyIntermediate := fixture(t, "keyword_search_graphql_empty_intermediate_response.json")
 	continuation := fixture(t, "keyword_search_graphql_pagination_response.json")

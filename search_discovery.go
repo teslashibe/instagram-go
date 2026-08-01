@@ -147,8 +147,12 @@ func (c *Client) SearchKeywordPosts(query string) *Iterator[*Post] {
 			return Page[*Post]{}, err
 		}
 		page, err := resp.page(op)
-		if err != nil || !page.HasMore {
+		if err != nil {
 			return page, err
+		}
+		if !page.HasMore {
+			page.NextCursor = ""
+			return page, nil
 		}
 		state.After = page.NextCursor
 		nextCursor, err := encodeKeywordSearchCursor(state)
