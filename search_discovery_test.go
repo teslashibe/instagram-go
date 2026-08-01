@@ -581,6 +581,17 @@ func TestSearchPostsMapsTopSERPLayoutsAndResumesCursor(t *testing.T) {
 	if cursor == "" || strings.Contains(cursor, "NEXT_1") || strings.Contains(cursor, "RANK_1") {
 		t.Fatalf("cursor is not opaque: %q", cursor)
 	}
+	rawCursor, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatalf("decode cursor: %v", err)
+	}
+	var cursorState map[string]any
+	if err := json.Unmarshal(rawCursor, &cursorState); err != nil {
+		t.Fatalf("unmarshal cursor: %v", err)
+	}
+	if cursorState["v"] != float64(2) || cursorState["query"] != "billing automation" {
+		t.Fatalf("cursor state = %#v", cursorState)
+	}
 	second := c.SearchPosts("billing automation").WithCursor(cursor).WithMaxPages(1)
 	secondPage, err := second.Collect(context.Background())
 	if err != nil {
@@ -738,6 +749,69 @@ func TestSearchPostsRejectsInvalidPaginationWithoutExtraRequest(t *testing.T) {
 			}
 			if tt.cursor == "" && !errors.Is(it.Err(), instagram.ErrUnexpectedResponse) {
 				t.Fatalf("got %v, want ErrUnexpectedResponse", it.Err())
+			}
+		})
+	}
+}
+
+func TestSearchPostsRejectsInvalidCursorsWithoutHTTP(t *testing.T) {
+	encode := func(t *testing.T, state map[string]any) string {
+		t.Helper()
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatalf("marshal cursor: %v", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	validState := func() map[string]any {
+		return map[string]any{
+			"v":          2,
+			"max_id":     "NEXT_1",
+			"rank_token": "RANK_1",
+			"query":      "coffee",
+		}
+	}
+
+	tests := []struct {
+		name   string
+		cursor func(*testing.T) string
+		want   string
+	}{
+		{name: "malformed", cursor: func(*testing.T) string { return "not-a-search-posts-cursor" }, want: "invalid cursor"},
+		{name: "unsupported version", cursor: func(t *testing.T) string {
+			state := validState()
+			state["v"] = 1
+			delete(state, "query")
+			return encode(t, state)
+		}, want: "unsupported cursor version"},
+		{name: "missing query", cursor: func(t *testing.T) string {
+			state := validState()
+			delete(state, "query")
+			return encode(t, state)
+		}, want: "invalid cursor state"},
+		{name: "query mismatch", cursor: func(t *testing.T) string {
+			state := validState()
+			state["query"] = "tea"
+			return encode(t, state)
+		}, want: "cursor query mismatch"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return jsonResponse(req, http.StatusOK, nil), nil
+			})
+			it := c.SearchPosts(" coffee ").WithCursor(tt.cursor(t))
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if it.Err() == nil || !strings.Contains(it.Err().Error(), tt.want) {
+				t.Fatalf("error = %v, want text %q", it.Err(), tt.want)
+			}
+			if requests != 0 {
+				t.Fatalf("invalid cursor performed %d HTTP requests", requests)
 			}
 		})
 	}

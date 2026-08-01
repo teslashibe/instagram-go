@@ -212,7 +212,10 @@ Write endpoints are implemented but not exercised in the integration suite.
 
 `Search` and `SearchUsers` remain the compatible REST entity searches.
 `SearchPosts` uses the mobile Top SERP and preserves its complete pagination
-state in the iterator's opaque cursor. `SearchKeywordPosts` uses the web
+state in a versioned opaque cursor bound to the trimmed query. Version-1
+SearchPosts cursors are rejected because they contain no query binding;
+malformed, unsupported, or query-mismatched cursors fail before an HTTP request
+is made. `SearchKeywordPosts` uses the web
 keyword-to-media connection, transparently switches from the captured initial
 GraphQL document to the distinct pagination document, and preserves the Relay
 cursor plus both GraphQL search session IDs in its versioned opaque cursor.
@@ -243,7 +246,8 @@ if err := it.Err(); err != nil {
     return err
 }
 
-// Persist after a page, then resume later without losing Top SERP state.
+// Persist after a page, then resume the same trimmed query later without
+// losing Top SERP state.
 cursor := it.Cursor()
 if cursor != "" {
     resumed := client.SearchPosts("specialty coffee").WithCursor(cursor)

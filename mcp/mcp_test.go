@@ -183,7 +183,7 @@ func TestSearchPostsToolReturnsMediaIDsAndResumesCursor(t *testing.T) {
 	})
 	tool := findTool(t, "instagram_search_posts")
 
-	firstRaw, err := tool.Invoke(context.Background(), client, json.RawMessage(`{"query":"coffee","limit":12}`))
+	firstRaw, err := tool.Invoke(context.Background(), client, json.RawMessage(`{"query":" coffee ","limit":12}`))
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -224,6 +224,68 @@ func TestSearchPostsToolReturnsMediaIDsAndResumesCursor(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestSearchPostsToolRejectsCrossQueryCursorsWithoutHTTP(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+		body  string
+	}{
+		{
+			name:  "SDK continuation cursor",
+			limit: 12,
+			body: `{"media_grid":{"sections":[{"layout_content":{"medias":[{"media":{
+				"pk":"1","id":"1_9","code":"POST1","media_type":1,"user":{"pk":"9","username":"creator"}
+			}}]}}],"has_more":true,"next_max_id":"NEXT_1","rank_token":"RANK_1"},"status":"ok"}`,
+		},
+		{
+			name:  "MCP partial-page cursor",
+			limit: 1,
+			body: `{"media_grid":{"sections":[{"layout_content":{"medias":[
+				{"media":{"pk":"1","id":"1_9","code":"POST1","media_type":1,"user":{"pk":"9","username":"creator"}}},
+				{"media":{"pk":"2","id":"2_9","code":"POST2","media_type":1,"user":{"pk":"9","username":"creator"}}}
+			]}}],"has_more":true,"next_max_id":"NEXT_1","rank_token":"RANK_1"},"status":"ok"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return mcpJSONResponse(req, http.StatusOK, tt.body), nil
+			})
+			tool := findTool(t, "instagram_search_posts")
+
+			firstInput, err := json.Marshal(map[string]any{"query": "coffee", "limit": tt.limit})
+			if err != nil {
+				t.Fatalf("marshal first input: %v", err)
+			}
+			firstRaw, err := tool.Invoke(context.Background(), client, firstInput)
+			if err != nil {
+				t.Fatalf("first page: %v", err)
+			}
+			first := firstRaw.(mcptool.Page[*instagram.Post])
+			if first.NextCursor == "" {
+				t.Fatal("first page has no next_cursor")
+			}
+
+			mismatchedInput, err := json.Marshal(map[string]any{
+				"query": "tea", "limit": tt.limit, "cursor": first.NextCursor,
+			})
+			if err != nil {
+				t.Fatalf("marshal mismatched input: %v", err)
+			}
+			_, err = tool.Invoke(context.Background(), client, mismatchedInput)
+			if err == nil || !strings.Contains(err.Error(), "cursor query mismatch") {
+				t.Fatalf("error = %v, want cursor query mismatch", err)
+			}
+			if requests != 1 {
+				t.Fatalf("cross-query resume made %d requests, want 1 initial request only", requests)
+			}
+		})
 	}
 }
 
