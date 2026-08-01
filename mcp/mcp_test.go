@@ -508,14 +508,16 @@ func TestSearchReelsToolRejectsCursorsWithoutHTTP(t *testing.T) {
 
 func TestSearchPostsToolRejectsInvalidCursorsWithoutHTTP(t *testing.T) {
 	legacyPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"offset":1}`))
-	missingPageCursor := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"offset":1,"page_cursor":""}`))
+	emptyPageCursor := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"offset":1,"page_cursor":""}`))
+	whitespacePageCursor := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"offset":1,"page_cursor":" \t\n"}`))
 	tests := []struct {
 		name   string
 		query  string
 		cursor string
 	}{
 		{name: "offset without page_cursor", query: "coffee", cursor: "mcp-search-v1." + legacyPayload},
-		{name: "empty page_cursor", query: "coffee", cursor: "mcp-search-v1." + missingPageCursor},
+		{name: "empty page_cursor", query: "coffee", cursor: "mcp-search-v1." + emptyPageCursor},
+		{name: "whitespace page_cursor", query: "coffee", cursor: "mcp-search-v1." + whitespacePageCursor},
 		{name: "malformed prefixed cursor", query: "coffee", cursor: "mcp-search-v1.not-base64!"},
 	}
 
