@@ -506,6 +506,45 @@ func TestSearchReelsToolRejectsCursorsWithoutHTTP(t *testing.T) {
 	}
 }
 
+func TestSearchPostsToolRejectsInvalidCursorsWithoutHTTP(t *testing.T) {
+	legacyPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"offset":1}`))
+	missingPageCursor := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"offset":1,"page_cursor":""}`))
+	tests := []struct {
+		name   string
+		query  string
+		cursor string
+	}{
+		{name: "offset without page_cursor", query: "coffee", cursor: "mcp-search-v1." + legacyPayload},
+		{name: "empty page_cursor", query: "coffee", cursor: "mcp-search-v1." + missingPageCursor},
+		{name: "malformed prefixed cursor", query: "coffee", cursor: "mcp-search-v1.not-base64!"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return mcpJSONResponse(req, http.StatusOK, `{}`), nil
+			})
+			input, err := json.Marshal(map[string]any{
+				"query": tt.query, "limit": 1, "cursor": tt.cursor,
+			})
+			if err != nil {
+				t.Fatalf("marshal input: %v", err)
+			}
+
+			_, err = findTool(t, "instagram_search_posts").Invoke(context.Background(), client, input)
+			var toolErr *mcptool.Error
+			if !errors.As(err, &toolErr) || toolErr.Code != "invalid_input" || !strings.Contains(toolErr.Message, "cursor") {
+				t.Fatalf("error = %v, want structured invalid cursor error", err)
+			}
+			if requests != 0 {
+				t.Fatalf("cursor validation made %d HTTP requests, want zero", requests)
+			}
+		})
+	}
+}
+
 func TestKeywordSearchToolsRejectMissingQueryWithoutHTTP(t *testing.T) {
 	var requests int
 	client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {

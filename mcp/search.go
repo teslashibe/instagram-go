@@ -153,6 +153,9 @@ func decodeSearchPageCursor(cursor string) (pageCursor string, offset int, err e
 	if state.Version != 1 || state.Offset <= 0 {
 		return "", 0, invalidSearchCursorError("invalid state")
 	}
+	if strings.TrimSpace(state.PageCursor) == "" {
+		return "", 0, invalidSearchCursorError("missing page cursor")
+	}
 	return state.PageCursor, state.Offset, nil
 }
 
