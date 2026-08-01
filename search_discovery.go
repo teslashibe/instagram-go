@@ -3,6 +3,7 @@ package instagram
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,7 +15,8 @@ import (
 )
 
 const (
-	keywordPageSize = 24
+	keywordPageSize      = 24
+	keywordCursorVersion = 1
 )
 
 // AccountSearchResult is one typed page from the mobile account SERP.
@@ -74,34 +76,39 @@ func (c *Client) SearchReels(query string) *Iterator[*Post] {
 // SearchKeywordPosts iterates over posts from the authenticated web keyword
 // search GraphQL connection. It uses the inventory-proven initial persisted
 // operation for the first request and the distinct pagination operation for
-// subsequent pages.
+// subsequent pages. Cursor returns an opaque, query-bound continuation value
+// containing the Relay cursor and both search session IDs, so it can be passed
+// to WithCursor on a fresh iterator without changing the search session.
 //
 // Persisted document IDs are private, dated contracts and can rotate. A stale
 // or malformed GraphQL response returns ErrUnexpectedResponse.
 func (c *Client) SearchKeywordPosts(query string) *Iterator[*Post] {
 	query = strings.TrimSpace(query)
-	var searchSessionID, serpSessionID string
-	var sessionErr error
 
 	return newIterator(func(ctx context.Context, cursor string) (Page[*Post], error) {
 		if query == "" {
 			return Page[*Post]{}, fmt.Errorf("instagram: SearchKeywordPosts: query required")
 		}
-		if searchSessionID == "" && sessionErr == nil {
-			searchSessionID, sessionErr = newSearchSessionID()
-			if sessionErr == nil {
-				serpSessionID, sessionErr = newSearchSessionID()
-			}
+
+		state, err := decodeKeywordSearchCursor(cursor, query)
+		if err != nil {
+			return Page[*Post]{}, fmt.Errorf("instagram: SearchKeywordPosts: %w", err)
 		}
-		if sessionErr != nil {
-			return Page[*Post]{}, fmt.Errorf("instagram: SearchKeywordPosts: create session IDs: %w", sessionErr)
+		if cursor == "" {
+			state.SearchSessionID, err = newSearchSessionID()
+			if err == nil {
+				state.SERPSessionID, err = newSearchSessionID()
+			}
+			if err != nil {
+				return Page[*Post]{}, fmt.Errorf("instagram: SearchKeywordPosts: create session IDs: %w", err)
+			}
 		}
 
 		op := keywordSearchInitialOperation
 		var after any
-		if cursor != "" {
+		if state.After != "" {
 			op = keywordSearchPaginationOperation
-			after = cursor
+			after = state.After
 		}
 		variables, err := json.Marshal(struct {
 			After           any    `json:"after"`
@@ -113,8 +120,8 @@ func (c *Client) SearchKeywordPosts(query string) *Iterator[*Post] {
 			After:           after,
 			First:           keywordPageSize,
 			Query:           query,
-			SearchSessionID: searchSessionID,
-			SERPSessionID:   serpSessionID,
+			SearchSessionID: state.SearchSessionID,
+			SERPSessionID:   state.SERPSessionID,
 		})
 		if err != nil {
 			return Page[*Post]{}, fmt.Errorf("instagram: SearchKeywordPosts: encode variables: %w", err)
@@ -139,8 +146,59 @@ func (c *Client) SearchKeywordPosts(query string) *Iterator[*Post] {
 		}, &resp); err != nil {
 			return Page[*Post]{}, err
 		}
-		return resp.page(op)
+		page, err := resp.page(op)
+		if err != nil || !page.HasMore {
+			return page, err
+		}
+		state.After = page.NextCursor
+		nextCursor, err := encodeKeywordSearchCursor(state)
+		if err != nil {
+			return Page[*Post]{}, fmt.Errorf("instagram: SearchKeywordPosts: encode cursor: %w", err)
+		}
+		page.NextCursor = nextCursor
+		return page, nil
 	})
+}
+
+type keywordSearchCursor struct {
+	Version         int    `json:"v"`
+	After           string `json:"after"`
+	SearchSessionID string `json:"search_session_id"`
+	SERPSessionID   string `json:"serp_session_id"`
+	Query           string `json:"query"`
+}
+
+func encodeKeywordSearchCursor(cursor keywordSearchCursor) (string, error) {
+	cursor.Version = keywordCursorVersion
+	raw, err := json.Marshal(cursor)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeKeywordSearchCursor(encoded, query string) (keywordSearchCursor, error) {
+	if encoded == "" {
+		return keywordSearchCursor{Version: keywordCursorVersion, Query: query}, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return keywordSearchCursor{}, fmt.Errorf("invalid cursor: %w", err)
+	}
+	var cursor keywordSearchCursor
+	if err := json.Unmarshal(raw, &cursor); err != nil {
+		return keywordSearchCursor{}, fmt.Errorf("invalid cursor: %w", err)
+	}
+	if cursor.Version != keywordCursorVersion {
+		return keywordSearchCursor{}, fmt.Errorf("unsupported cursor version %d", cursor.Version)
+	}
+	if cursor.After == "" || cursor.SearchSessionID == "" || cursor.SERPSessionID == "" || cursor.Query == "" {
+		return keywordSearchCursor{}, fmt.Errorf("invalid cursor state")
+	}
+	if cursor.Query != query {
+		return keywordSearchCursor{}, fmt.Errorf("cursor query mismatch")
+	}
+	return cursor, nil
 }
 
 // SearchAccounts searches the inventory-proven mobile account SERP and

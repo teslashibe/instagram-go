@@ -3,6 +3,7 @@ package instagram_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -187,7 +188,7 @@ func jsonResponse(req *http.Request, status int, body []byte) *http.Response {
 	}
 }
 
-func TestSearchKeywordPostsMapsInitialAndPaginationFixtures(t *testing.T) {
+func TestSearchKeywordPostsMapsFixturesAndResumesFreshIterator(t *testing.T) {
 	initial := fixture(t, "keyword_search_graphql_response.json")
 	continuation := fixture(t, "keyword_search_graphql_pagination_response.json")
 
@@ -196,6 +197,15 @@ func TestSearchKeywordPostsMapsInitialAndPaginationFixtures(t *testing.T) {
 	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
 		if req.Method != http.MethodPost || req.URL.Host != "www.instagram.com" || req.URL.Path != "/graphql/query" {
 			t.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
+		}
+		if req.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			t.Errorf("Content-Type = %q", req.Header.Get("Content-Type"))
+		}
+		if req.Header.Get("Origin") != "https://www.instagram.com" {
+			t.Errorf("Origin = %q", req.Header.Get("Origin"))
+		}
+		if req.Referer() != "https://www.instagram.com/explore/search/keyword/?q=coffee" {
+			t.Errorf("Referer = %q", req.Referer())
 		}
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -208,6 +218,9 @@ func TestSearchKeywordPostsMapsInitialAndPaginationFixtures(t *testing.T) {
 		mu.Lock()
 		forms = append(forms, form)
 		mu.Unlock()
+		if req.Header.Get("X-FB-Friendly-Name") != form.Get("fb_api_req_friendly_name") {
+			t.Errorf("X-FB-Friendly-Name = %q, form friendly name = %q", req.Header.Get("X-FB-Friendly-Name"), form.Get("fb_api_req_friendly_name"))
+		}
 		switch form.Get("doc_id") {
 		case "26586987494245638":
 			return jsonResponse(req, http.StatusOK, initial), nil
@@ -219,21 +232,50 @@ func TestSearchKeywordPostsMapsInitialAndPaginationFixtures(t *testing.T) {
 		}
 	})
 
-	posts, err := c.SearchKeywordPosts("coffee").Collect(context.Background())
+	first := c.SearchKeywordPosts(" coffee ").WithMaxPages(1)
+	firstPosts, err := first.Collect(context.Background())
 	if err != nil {
-		t.Fatalf("Collect: %v", err)
+		t.Fatalf("first page: %v", err)
 	}
-	if len(posts) != 2 {
-		t.Fatalf("got %d posts, want 2", len(posts))
+	if len(firstPosts) != 1 {
+		t.Fatalf("got %d initial posts, want 1", len(firstPosts))
 	}
-	if posts[0].Code != "SHORTCODE_REDACTED" || posts[0].Owner == nil || posts[0].Owner.Username != "username_redacted" {
-		t.Fatalf("unexpected initial post mapping: %#v", posts[0])
+	if firstPosts[0].Code != "SHORTCODE_REDACTED" || firstPosts[0].Owner == nil || firstPosts[0].Owner.Username != "username_redacted" {
+		t.Fatalf("unexpected initial post mapping: %#v", firstPosts[0])
 	}
-	if posts[0].OriginalWidth != 1080 || len(posts[0].VideoVersions) != 1 || posts[0].Caption != "CAPTION_REDACTED" {
-		t.Fatalf("missing rich initial fields: %#v", posts[0])
+	if firstPosts[0].OriginalWidth != 1080 || len(firstPosts[0].VideoVersions) != 1 || firstPosts[0].Caption != "CAPTION_REDACTED" {
+		t.Fatalf("missing rich initial fields: %#v", firstPosts[0])
 	}
-	if posts[1].Code != "SECOND_SHORTCODE_REDACTED" || posts[1].MediaType != instagram.MediaTypePhoto {
-		t.Fatalf("unexpected continuation post mapping: %#v", posts[1])
+
+	cursor := first.Cursor()
+	if cursor == "" || strings.Contains(cursor, "END_CURSOR_REDACTED") {
+		t.Fatalf("cursor is not opaque: %q", cursor)
+	}
+	rawCursor, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatalf("decode cursor: %v", err)
+	}
+	var cursorState map[string]any
+	if err := json.Unmarshal(rawCursor, &cursorState); err != nil {
+		t.Fatalf("unmarshal cursor: %v", err)
+	}
+	if cursorState["v"] != float64(1) || cursorState["after"] != "END_CURSOR_REDACTED" || cursorState["query"] != "coffee" {
+		t.Fatalf("cursor state = %#v", cursorState)
+	}
+	if cursorState["search_session_id"] == "" || cursorState["serp_session_id"] == "" {
+		t.Fatalf("cursor omitted session state: %#v", cursorState)
+	}
+
+	second := c.SearchKeywordPosts("coffee").WithCursor(cursor).WithMaxPages(1)
+	secondPosts, err := second.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("fresh iterator continuation: %v", err)
+	}
+	if len(secondPosts) != 1 || secondPosts[0].Code != "SECOND_SHORTCODE_REDACTED" || secondPosts[0].MediaType != instagram.MediaTypePhoto {
+		t.Fatalf("unexpected continuation post mapping: %#v", secondPosts)
+	}
+	if second.Cursor() != "" {
+		t.Fatalf("terminal cursor = %q, want empty", second.Cursor())
 	}
 
 	if len(forms) != 2 {
@@ -245,14 +287,23 @@ func TestSearchKeywordPostsMapsInitialAndPaginationFixtures(t *testing.T) {
 	}
 	var sessionIDs [][2]string
 	for i, form := range forms {
-		if form.Get("fb_api_req_friendly_name") != wantFriendly[i] || form.Get("__a") != "1" || form.Get("__d") != "www" {
+		keys := make([]string, 0, len(form))
+		for key := range form {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		wantFormKeys := []string{"__a", "__d", "doc_id", "fb_api_caller_class", "fb_api_req_friendly_name", "server_timestamps", "variables"}
+		if !reflect.DeepEqual(keys, wantFormKeys) {
+			t.Errorf("request %d form fields = %v, want %v", i, keys, wantFormKeys)
+		}
+		if form.Get("fb_api_req_friendly_name") != wantFriendly[i] || form.Get("__a") != "1" || form.Get("__d") != "www" || form.Get("fb_api_caller_class") != "RelayModern" || form.Get("server_timestamps") != "true" {
 			t.Errorf("request %d transport fields: %#v", i, form)
 		}
 		var variables map[string]any
 		if err := json.Unmarshal([]byte(form.Get("variables")), &variables); err != nil {
 			t.Fatalf("request %d variables: %v", i, err)
 		}
-		keys := make([]string, 0, len(variables))
+		keys = make([]string, 0, len(variables))
 		for key := range variables {
 			keys = append(keys, key)
 		}
@@ -274,6 +325,72 @@ func TestSearchKeywordPostsMapsInitialAndPaginationFixtures(t *testing.T) {
 	}
 	if sessionIDs[0] != sessionIDs[1] || sessionIDs[0][0] == "" || sessionIDs[0][1] == "" {
 		t.Errorf("session IDs were not stable across pages: %#v", sessionIDs)
+	}
+	if cursorState["search_session_id"] != sessionIDs[0][0] || cursorState["serp_session_id"] != sessionIDs[0][1] {
+		t.Errorf("cursor session state %#v does not match initial request %#v", cursorState, sessionIDs[0])
+	}
+}
+
+func TestSearchKeywordPostsRejectsInvalidCursorsWithoutHTTP(t *testing.T) {
+	encode := func(t *testing.T, state map[string]any) string {
+		t.Helper()
+		raw, err := json.Marshal(state)
+		if err != nil {
+			t.Fatalf("marshal cursor: %v", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	validState := func() map[string]any {
+		return map[string]any{
+			"v":                 1,
+			"after":             "END_CURSOR",
+			"search_session_id": "SEARCH_SESSION",
+			"serp_session_id":   "SERP_SESSION",
+			"query":             "coffee",
+		}
+	}
+
+	tests := []struct {
+		name   string
+		cursor func(*testing.T) string
+		want   string
+	}{
+		{name: "malformed", cursor: func(*testing.T) string { return "not-a-keyword-cursor" }, want: "invalid cursor"},
+		{name: "unsupported version", cursor: func(t *testing.T) string {
+			state := validState()
+			state["v"] = 2
+			return encode(t, state)
+		}, want: "unsupported cursor version"},
+		{name: "missing session state", cursor: func(t *testing.T) string {
+			state := validState()
+			delete(state, "serp_session_id")
+			return encode(t, state)
+		}, want: "invalid cursor state"},
+		{name: "query mismatch", cursor: func(t *testing.T) string {
+			state := validState()
+			state["query"] = "tea"
+			return encode(t, state)
+		}, want: "cursor query mismatch"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return jsonResponse(req, http.StatusOK, nil), nil
+			})
+			it := c.SearchKeywordPosts(" coffee ").WithCursor(tt.cursor(t))
+			if it.Next(context.Background()) {
+				t.Fatal("unexpected post")
+			}
+			if it.Err() == nil || !strings.Contains(it.Err().Error(), tt.want) {
+				t.Fatalf("error = %v, want text %q", it.Err(), tt.want)
+			}
+			if requests != 0 {
+				t.Fatalf("invalid cursor performed %d HTTP requests", requests)
+			}
+		})
 	}
 }
 

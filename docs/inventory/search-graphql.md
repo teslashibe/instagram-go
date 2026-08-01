@@ -33,8 +33,10 @@ retry policy, cooldown circuit breaker, and auth/error sentinels.
 - [x] Web keyword GraphQL initial operation — `SearchKeywordPosts(query)` uses
   `PolarisKeywordSearchExplorePageRelayQuery` for the first iterator page.
 - [x] Web keyword GraphQL continuation operation — the same iterator switches
-  to `PolarisKeywordSearchExplorePageRelayPaginationQuery` and passes only the
-  preceding non-empty `page_info.end_cursor` as `after`.
+  to `PolarisKeywordSearchExplorePageRelayPaginationQuery`; its versioned,
+  query-bound opaque cursor preserves the preceding non-empty
+  `page_info.end_cursor` plus both GraphQL session IDs for faithful resume on a
+  fresh iterator.
 - [x] Mobile Accounts SERP — `SearchAccounts(ctx, query)` maps account cards,
   page/rank tokens, friendship status, and search social context.
 - [x] Mobile keyword typeahead — `SearchTypeaheadUsers(ctx, query, count)` maps

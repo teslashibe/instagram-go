@@ -213,8 +213,11 @@ Write endpoints are implemented but not exercised in the integration suite.
 `Search` and `SearchUsers` remain the compatible REST entity searches.
 `SearchPosts` uses the mobile Top SERP and preserves its complete pagination
 state in the iterator's opaque cursor. `SearchKeywordPosts` uses the web
-keyword-to-media connection and transparently switches
-from the captured initial GraphQL document to the distinct pagination document.
+keyword-to-media connection, transparently switches from the captured initial
+GraphQL document to the distinct pagination document, and preserves the Relay
+cursor plus both GraphQL search session IDs in its versioned opaque cursor.
+Keyword cursors are bound to the trimmed query; malformed, unsupported, or
+query-mismatched cursors fail before an HTTP request is made.
 `SearchReels` returns Reel media as ordinary `Post` values, including media PKs
 needed by commenting helpers. It intentionally fetches only the first page: the
 live inventory proved response cursor fields but not their continuation request
@@ -244,6 +247,14 @@ if err := it.Err(); err != nil {
 cursor := it.Cursor()
 if cursor != "" {
     resumed := client.SearchPosts("specialty coffee").WithCursor(cursor)
+    _ = resumed
+}
+
+// Keyword GraphQL cursors also resume faithfully on a fresh iterator.
+keyword := client.SearchKeywordPosts("specialty coffee").WithMaxPages(1)
+_, err := keyword.Collect(ctx)
+if err == nil && keyword.Cursor() != "" {
+    resumed := client.SearchKeywordPosts("specialty coffee").WithCursor(keyword.Cursor())
     _ = resumed
 }
 

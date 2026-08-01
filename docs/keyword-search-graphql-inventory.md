@@ -136,6 +136,21 @@ string. The next request uses the continuation friendly name and `doc_id` from
 the operation table. The scrubbed cursor in the fixture is deliberately not a
 replayable production value.
 
+### SDK cursor contract
+
+`SearchKeywordPosts` wraps the Relay `end_cursor`, `search_session_id`, and
+`serp_session_id` in a versioned, URL-safe base64 JSON cursor. The cursor also
+stores the trimmed query so that it cannot accidentally resume a different
+keyword search. `Iterator.Cursor` values remain opaque to callers and may be
+persisted for `SearchKeywordPosts(query).WithCursor(cursor)` on a fresh
+iterator or in a later process.
+
+Before sending a continuation request, the SDK decodes the cursor, checks its
+version and required state, and verifies that its query matches the current
+trimmed query. Invalid or mismatched cursors fail locally without making an
+HTTP request. A valid continuation uses the original session IDs and supplies
+the stored Relay value as `after` to the pagination operation.
+
 ## Security and compatibility boundary
 
 Do not commit raw HAR files, cookies, `sessionid`, CSRF values, `fb_dtsg`, `lsd`,

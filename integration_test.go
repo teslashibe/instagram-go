@@ -455,6 +455,56 @@ func TestIntegration_SearchPosts(t *testing.T) {
 	t.Logf("PASS: SearchPosts returned first=%d second=%d new=%d", len(firstPage), len(secondPage), newPosts)
 }
 
+func TestIntegration_SearchKeywordPosts(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	first := c.SearchKeywordPosts("coffee").WithMaxPages(1)
+	firstPage, err := first.Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchKeywordPosts first page: %v", err)
+	}
+	if len(firstPage) == 0 {
+		t.Fatal("SearchKeywordPosts returned no posts for coffee")
+	}
+	firstIDs := make(map[string]struct{}, len(firstPage))
+	for _, post := range firstPage {
+		if post.PK == "" && post.Code == "" {
+			t.Fatalf("post has no usable media identifier: %#v", post)
+		}
+		key := post.PK
+		if key == "" {
+			key = post.Code
+		}
+		firstIDs[key] = struct{}{}
+	}
+
+	cursor := first.Cursor()
+	if cursor == "" {
+		t.Logf("PASS: SearchKeywordPosts returned %d posts and cleanly reported no second page", len(firstPage))
+		return
+	}
+	secondPage, err := c.SearchKeywordPosts("coffee").WithCursor(cursor).WithMaxPages(1).Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchKeywordPosts fresh-iterator continuation: %v", err)
+	}
+	newPosts := 0
+	for _, post := range secondPage {
+		key := post.PK
+		if key == "" {
+			key = post.Code
+		}
+		if _, duplicate := firstIDs[key]; !duplicate {
+			newPosts++
+		}
+	}
+	if len(secondPage) > 0 && newPosts == 0 {
+		t.Fatal("SearchKeywordPosts second page duplicated the entire first-page result set")
+	}
+	t.Logf("PASS: SearchKeywordPosts returned first=%d second=%d new=%d", len(firstPage), len(secondPage), newPosts)
+}
+
 func TestIntegration_SearchUsers(t *testing.T) {
 	c := newClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
