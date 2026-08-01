@@ -51,8 +51,6 @@ func searchReels(ctx context.Context, c *instagram.Client, in SearchReelsInput) 
 	if query == "" {
 		return nil, invalidSearchQueryError()
 	}
-	// The inventory proves only the initial Reels request. Reject cursor input
-	// locally instead of replaying a live, potentially reordered first page.
 	if in.Cursor != "" {
 		return nil, invalidSearchCursorError("reels continuation is unavailable")
 	}
@@ -74,6 +72,89 @@ func searchReels(ctx context.Context, c *instagram.Client, in SearchReelsInput) 
 		Items:     pageItems,
 		Truncated: end < len(items),
 	}, nil
+}
+
+// SearchKeywordPostsInput is the typed input for
+// instagram_search_keyword_posts.
+type SearchKeywordPostsInput struct {
+	Query  string `json:"query" jsonschema:"description=keyword query used for Instagram's web GraphQL search,required"`
+	Cursor string `json:"cursor,omitempty" jsonschema:"description=opaque next_cursor from a previous response"`
+}
+
+func searchKeywordPosts(ctx context.Context, c *instagram.Client, in SearchKeywordPostsInput) (any, error) {
+	if strings.TrimSpace(in.Query) == "" {
+		return nil, invalidSearchQueryError()
+	}
+	it := c.SearchKeywordPosts(in.Query).WithMaxPages(1)
+	if in.Cursor != "" {
+		it.WithCursor(in.Cursor)
+	}
+	items := make([]*instagram.Post, 0)
+	for it.Next(ctx) {
+		items = append(items, it.Item())
+	}
+	if err := it.Err(); err != nil {
+		return nil, searchToolError(err)
+	}
+	return mcptool.Page[*instagram.Post]{
+		Items:      items,
+		NextCursor: it.Cursor(),
+		Truncated:  it.Cursor() != "",
+	}, nil
+}
+
+// SearchAccountsInput is the typed input for instagram_search_accounts.
+type SearchAccountsInput struct {
+	Query string `json:"query" jsonschema:"description=account name or username query,required"`
+}
+
+func searchAccounts(ctx context.Context, c *instagram.Client, in SearchAccountsInput) (any, error) {
+	if strings.TrimSpace(in.Query) == "" {
+		return nil, invalidSearchQueryError()
+	}
+	result, err := c.SearchAccounts(ctx, in.Query)
+	if err != nil {
+		return nil, searchToolError(err)
+	}
+	return result, nil
+}
+
+// SearchTypeaheadUsersInput is the typed input for
+// instagram_search_typeahead_users.
+type SearchTypeaheadUsersInput struct {
+	Query string `json:"query" jsonschema:"description=partial account name or username,required"`
+	Count int    `json:"count,omitempty" jsonschema:"description=maximum account suggestions,minimum=1,maximum=50,default=30"`
+}
+
+func searchTypeaheadUsers(ctx context.Context, c *instagram.Client, in SearchTypeaheadUsersInput) (any, error) {
+	if strings.TrimSpace(in.Query) == "" {
+		return nil, invalidSearchQueryError()
+	}
+	count := in.Count
+	if count <= 0 {
+		count = 30
+	}
+	result, err := c.SearchTypeaheadUsers(ctx, in.Query, count)
+	if err != nil {
+		return nil, searchToolError(err)
+	}
+	return result, nil
+}
+
+// KeywordTypeaheadInput is the typed input for instagram_keyword_typeahead.
+type KeywordTypeaheadInput struct {
+	Query string `json:"query" jsonschema:"description=partial keyword used to suggest Instagram accounts,required"`
+}
+
+func keywordTypeahead(ctx context.Context, c *instagram.Client, in KeywordTypeaheadInput) (any, error) {
+	if strings.TrimSpace(in.Query) == "" {
+		return nil, invalidSearchQueryError()
+	}
+	suggestions, err := c.KeywordTypeahead(ctx, in.Query)
+	if err != nil {
+		return nil, searchToolError(err)
+	}
+	return map[string]any{"suggestions": suggestions}, nil
 }
 
 const searchPageCursorPrefix = "mcp-search-v1."
@@ -180,6 +261,14 @@ func searchToolError(err error) error {
 			Message: "Instagram session expired; reconnect Instagram",
 		}
 	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "cursor query mismatch") {
+		return invalidSearchCursorError("cursor query mismatch")
+	}
+	if strings.Contains(message, "invalid cursor") ||
+		strings.Contains(message, "unsupported cursor version") {
+		return invalidSearchCursorError("cursor is malformed or belongs to another query")
+	}
 	return err
 }
 
@@ -201,5 +290,29 @@ var searchTools = []mcptool.Tool{
 		"Search the first page of Instagram reels by keyword without continuation",
 		"SearchReels",
 		searchReels,
+	),
+	mcptool.Define[*instagram.Client, SearchKeywordPostsInput](
+		"instagram_search_keyword_posts",
+		"Search Instagram posts through the web keyword index with opaque pagination",
+		"SearchKeywordPosts",
+		searchKeywordPosts,
+	),
+	mcptool.Define[*instagram.Client, SearchAccountsInput](
+		"instagram_search_accounts",
+		"Search Instagram accounts and return rich account SERP context",
+		"SearchAccounts",
+		searchAccounts,
+	),
+	mcptool.Define[*instagram.Client, SearchTypeaheadUsersInput](
+		"instagram_search_typeahead_users",
+		"Suggest Instagram accounts for a partial name or username",
+		"SearchTypeaheadUsers",
+		searchTypeaheadUsers,
+	),
+	mcptool.Define[*instagram.Client, KeywordTypeaheadInput](
+		"instagram_keyword_typeahead",
+		"Return lightweight Instagram account suggestions for a partial keyword",
+		"KeywordTypeahead",
+		keywordTypeahead,
 	),
 }

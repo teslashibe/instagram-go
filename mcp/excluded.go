@@ -11,11 +11,4 @@ package mcp
 //   - prefer to add an MCP tool for it (see users.go / posts.go / etc.)
 //   - if the method is unsuitable for an agent (internal observability,
 //     auth-only helper, etc.), add it here with a reason
-var Excluded = map[string]string{
-	"KeywordTypeahead":     "SDK keyword-suggestion helper; MCP exposure is expressly out of scope for issue #9",
-	"RateLimit":            "internal observability; surfaced via the host application's MCP middleware, not as a callable tool",
-	"SearchAccounts":       "SDK discovery wrapper; MCP exposure is intentionally deferred until an agent workflow requires this account SERP",
-	"SearchKeywordPosts":   "SDK discovery wrapper; MCP pagination and result-budget semantics are intentionally deferred to a focused follow-up",
-	"SearchTypeaheadUsers": "SDK discovery wrapper; MCP exposure is intentionally deferred until an agent workflow requires mobile typeahead",
-	"WaitForCooldown":      "internal flow-control primitive; the host should manage rate-limit cooldowns at the request layer rather than expose blocking calls to the agent",
-}
+var Excluded = map[string]string{}
