@@ -9,10 +9,12 @@ import (
 
 func validMutationRequest() UpdateAdStatusRequest {
 	return UpdateAdStatusRequest{
-		AdID: "ad-1", AdAccountID: "123", Status: "ACTIVE", BudgetMinor: 2500, Currency: "USD",
+		AdID: "ad-1", AdAccountID: "123", Status: "ACTIVE", BudgetMinor: 2500,
+		BudgetKind: AdBudgetDaily, BudgetOwnerType: AdBudgetOwnerAdSet, BudgetOwnerID: "adset-1", Currency: "USD",
 		StartDate: "2026-08-01", EndDate: "2026-08-31",
 		Confirmation: AdMutationConfirmation{Approved: true, Phrase: AdMutationConfirmationPhrase, AdAccountID: "123",
-			BudgetMinor: 2500, Currency: "USD", StartDate: "2026-08-01", EndDate: "2026-08-31"},
+			BudgetMinor: 2500, BudgetKind: AdBudgetDaily, BudgetOwnerType: AdBudgetOwnerAdSet, BudgetOwnerID: "adset-1",
+			Currency: "USD", StartDate: "2026-08-01", EndDate: "2026-08-31"},
 	}
 }
 
@@ -31,6 +33,21 @@ func TestAdMutationsRequireSeparateEnablementAndExactConfirmation(t *testing.T) 
 	}{
 		{"not approved", func(r *UpdateAdStatusRequest) { r.Confirmation.Approved = false }},
 		{"budget mismatch", func(r *UpdateAdStatusRequest) { r.Confirmation.BudgetMinor++ }},
+		{"budget kind mismatch", func(r *UpdateAdStatusRequest) { r.Confirmation.BudgetKind = AdBudgetLifetime }},
+		{"budget owner type mismatch", func(r *UpdateAdStatusRequest) { r.Confirmation.BudgetOwnerType = AdBudgetOwnerCampaign }},
+		{"budget owner ID mismatch", func(r *UpdateAdStatusRequest) { r.Confirmation.BudgetOwnerID = "campaign-1" }},
+		{"invalid budget kind", func(r *UpdateAdStatusRequest) {
+			r.BudgetKind = "weekly"
+			r.Confirmation.BudgetKind = "weekly"
+		}},
+		{"invalid budget owner type", func(r *UpdateAdStatusRequest) {
+			r.BudgetOwnerType = "ad"
+			r.Confirmation.BudgetOwnerType = "ad"
+		}},
+		{"missing budget owner ID", func(r *UpdateAdStatusRequest) {
+			r.BudgetOwnerID = ""
+			r.Confirmation.BudgetOwnerID = ""
+		}},
 		{"currency mismatch", func(r *UpdateAdStatusRequest) { r.Confirmation.Currency = "EUR" }},
 		{"date mismatch", func(r *UpdateAdStatusRequest) { r.Confirmation.EndDate = "2026-09-01" }},
 		{"phrase mismatch", func(r *UpdateAdStatusRequest) { r.Confirmation.Phrase = "yes" }},
@@ -166,8 +183,63 @@ func TestAdMutationUsesCampaignBudgetAndScheduleWhenAdSetInherits(t *testing.T) 
 		}
 		return nil, nil
 	})
-	result, err := c.UpdateAdStatus(context.Background(), validMutationRequest())
+	request := validMutationRequest()
+	request.BudgetKind = AdBudgetLifetime
+	request.BudgetOwnerType = AdBudgetOwnerCampaign
+	request.BudgetOwnerID = "campaign-1"
+	request.Confirmation.BudgetKind = AdBudgetLifetime
+	request.Confirmation.BudgetOwnerType = AdBudgetOwnerCampaign
+	request.Confirmation.BudgetOwnerID = "campaign-1"
+	result, err := c.UpdateAdStatus(context.Background(), request)
 	if err != nil || !result.Success || requests != 5 {
 		t.Fatalf("result=%#v err=%v requests=%d", result, err, requests)
+	}
+}
+
+func TestAdMutationRejectsActualBudgetKindOrOwnerMismatchBeforeWrite(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*UpdateAdStatusRequest)
+	}{
+		{"kind", func(request *UpdateAdStatusRequest) {
+			request.BudgetKind = AdBudgetLifetime
+			request.Confirmation.BudgetKind = AdBudgetLifetime
+		}},
+		{"owner type", func(request *UpdateAdStatusRequest) {
+			request.BudgetOwnerType = AdBudgetOwnerCampaign
+			request.Confirmation.BudgetOwnerType = AdBudgetOwnerCampaign
+		}},
+		{"owner ID", func(request *UpdateAdStatusRequest) {
+			request.BudgetOwnerID = "other-adset"
+			request.Confirmation.BudgetOwnerID = "other-adset"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scopes := append(allReadScopes(), ScopeAdsManagement)
+			requests := 0
+			c := testClient(t, scopes, true, func(req *http.Request) (*http.Response, error) {
+				requests++
+				switch requests {
+				case 1:
+					return jsonResponse(req, 200, `{"id":"ad-1","account_id":"123","adset_id":"adset-1"}`), nil
+				case 2:
+					return jsonResponse(req, 200, `{"id":"adset-1","account_id":"123","daily_budget":"2500","start_time":"2026-08-01","end_time":"2026-08-31"}`), nil
+				case 3:
+					return jsonResponse(req, 200, `{"id":"act_123","account_id":"123","currency":"USD"}`), nil
+				default:
+					t.Fatalf("mutation reached write: %s %s", req.Method, req.URL)
+					return nil, nil
+				}
+			})
+			request := validMutationRequest()
+			tt.mutate(&request)
+			if _, err := c.UpdateAdStatus(context.Background(), request); !errors.Is(err, ErrConfirmationRequired) {
+				t.Fatalf("actual budget binding error=%v", err)
+			}
+			if requests != 3 {
+				t.Fatalf("requests=%d", requests)
+			}
+		})
 	}
 }

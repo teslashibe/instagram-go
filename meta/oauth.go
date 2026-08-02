@@ -45,7 +45,7 @@ func (c *Client) AuthorizationURL(state string, scopes ...Scope) (string, error)
 		return "", fmt.Errorf("%w: OAuth state is required", ErrInvalidInput)
 	}
 	if len(scopes) == 0 {
-		scopes = DefaultReadScopes
+		scopes = append([]Scope(nil), c.requestedScopes...)
 	}
 	if err := validateScopes(scopes, c.allowMutations); err != nil {
 		return "", err
@@ -75,8 +75,9 @@ func (c *Client) ExchangeCode(ctx context.Context, code string) (Token, error) {
 	if err != nil {
 		return Token{}, err
 	}
-	if len(token.Scopes) == 0 {
-		token.Scopes = append([]Scope(nil), c.grantedScopes...)
+	token.Scopes, err = c.fetchGrantedScopes(ctx, token)
+	if err != nil {
+		return Token{}, fmt.Errorf("meta: verify OAuth grants: %w", err)
 	}
 	if err := c.tokenStore.Save(ctx, token); err != nil {
 		return Token{}, fmt.Errorf("meta: store OAuth token: %w", err)
@@ -102,13 +103,45 @@ func (c *Client) RefreshToken(ctx context.Context) (Token, error) {
 	if err != nil {
 		return Token{}, fmt.Errorf("%w: %v", ErrReauthorizationRequired, err)
 	}
-	if len(token.Scopes) == 0 {
-		token.Scopes = append([]Scope(nil), current.Scopes...)
+	token.Scopes, err = c.fetchGrantedScopes(ctx, token)
+	if err != nil {
+		return Token{}, fmt.Errorf("%w: verify refreshed OAuth grants: %v", ErrReauthorizationRequired, err)
 	}
 	if err := c.tokenStore.Save(ctx, token); err != nil {
 		return Token{}, fmt.Errorf("meta: store refreshed token: %w", err)
 	}
 	return token, nil
+}
+
+// fetchGrantedScopes reads Facebook's permission state with the newly issued
+// user token. Requested/configured scopes are never treated as proof that a
+// person granted them.
+func (c *Client) fetchGrantedScopes(ctx context.Context, token Token) ([]Scope, error) {
+	var response struct {
+		Data []struct {
+			Permission Scope  `json:"permission"`
+			Status     string `json:"status"`
+		} `json:"data"`
+	}
+	if err := c.doJSONOnce(ctx, http.MethodGet, "me/permissions", url.Values{"limit": {"100"}}, nil, token, &response); err != nil {
+		return nil, err
+	}
+	if response.Data == nil {
+		return nil, fmt.Errorf("%w: permissions response missing data", ErrUnexpectedResponse)
+	}
+	granted := make([]Scope, 0, len(response.Data))
+	seen := make(map[Scope]struct{}, len(response.Data))
+	for _, permission := range response.Data {
+		if permission.Status != "granted" || strings.TrimSpace(string(permission.Permission)) == "" {
+			continue
+		}
+		if _, exists := seen[permission.Permission]; exists {
+			continue
+		}
+		seen[permission.Permission] = struct{}{}
+		granted = append(granted, permission.Permission)
+	}
+	return granted, nil
 }
 
 func (c *Client) exchangeToken(ctx context.Context, q url.Values) (Token, error) {

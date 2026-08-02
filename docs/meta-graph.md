@@ -40,6 +40,8 @@ permissions the deployment uses.
 `ads_management` is not part of `DefaultReadScopes`. It can only be requested
 when `Config.EnableAdMutations` is true, and `meta.New` rejects mutation-enabled
 configuration unless that separately approved scope is present.
+`Config.GrantedScopes` is the configured scope set the default authorization
+URL requests; it is not treated as proof of a grant.
 
 ```go
 store := meta.NewMemoryTokenStore(meta.Token{}) // use encrypted durable storage in production
@@ -67,11 +69,14 @@ encrypted secret storage and restrict access to the owning user or tenant.
 `MemoryTokenStore` is suitable only for tests and short-lived processes.
 
 `ExchangeCode` and `RefreshToken` save the resulting token only after a
-successful exchange. Requests fail before transport when a token is absent or
-expired. Meta does not guarantee that every long-lived user token can be
-silently renewed indefinitely; `ErrReauthorizationRequired` means the user must
-complete Facebook Login again. Token values are excluded from Graph errors,
-MCP errors, pagination cursors, and `Token.String`.
+successful exchange and a `/me/permissions` check. `Token.Scopes` therefore
+contains only permissions whose current status is `granted`; requested or
+declined permissions are never copied into stored grant state. Requests fail
+before transport when a token is absent, expired, or lacks a required verified
+scope. Meta does not guarantee that every long-lived user token can be silently
+renewed indefinitely; `ErrReauthorizationRequired` means the user must complete
+Facebook Login again. Token values are excluded from Graph errors, MCP errors,
+pagination cursors, and `Token.String`.
 
 The Graph API version defaults to `meta.DefaultAPIVersion`. Pin a different
 supported version with `meta.WithAPIVersion` and validate metric availability
@@ -99,15 +104,20 @@ from silently choosing an account.
 
 Account and media reads use typed metric and period constants. Account insight
 timeframes require `since < until` and are bounded to 93 days per request.
-Metric/period combinations are validated explicitly. Media insights require a
-typed media surface (`image`, `carousel_album`, `video`, `reel`, or `story`),
-use `lifetime`, and reject metrics unavailable for that surface. Unknown,
-duplicate, or incompatible metrics fail before an HTTP request.
+Account requests also select `MetricTypeTimeSeries` or `MetricTypeTotalValue`;
+the latter is required for `accounts_engaged`, `total_interactions`, and
+`follows_and_unfollows`. Metrics from the two response families cannot be mixed
+in one request. Metric/period combinations are validated explicitly. Media
+insights require a typed media surface (`image`, `carousel_album`, `video`,
+`reel`, or `story`), use `lifetime`, and reject metrics unavailable for that
+surface. Unknown, duplicate, or incompatible metrics fail before an HTTP
+request.
 
 ```go
 insights, err := client.GetAccountInsights(ctx, meta.AccountInsightsRequest{
-    Metrics: []meta.AccountMetric{meta.AccountMetricReach, meta.AccountMetricProfileViews},
-    Period:  meta.PeriodDay,
+    Metrics:    []meta.AccountMetric{meta.AccountMetricReach, meta.AccountMetricProfileViews},
+    MetricType: meta.MetricTypeTimeSeries,
+    Period:     meta.PeriodDay,
     Timeframe: meta.Timeframe{Since: since, Until: until},
 })
 ```
@@ -141,16 +151,17 @@ Ad mutation methods are disabled unless all of these conditions hold:
 2. The separately approved `ads_management` scope is granted.
 3. A positive budget in minor currency units, ISO currency, start date, and end
    date are supplied.
-4. `AdMutationConfirmation` exactly repeats the account, budget, currency, and
-   dates, sets `Approved`, and uses `meta.AdMutationConfirmationPhrase`.
+4. `AdMutationConfirmation` exactly repeats the account, budget amount, budget
+   kind (`daily` or `lifetime`), budget owner type and ID, currency, and dates,
+   sets `Approved`, and uses `meta.AdMutationConfirmationPhrase`.
 5. The target ad, its ad set, and any campaign-level budget/schedule resolve to
    the confirmed ad account.
-6. The confirmed budget, currency, and dates exactly match the effective
-   budget/schedule and account currency returned by Graph.
+6. The confirmed budget amount, kind, owner, currency, and dates exactly match
+   the effective budget/schedule and account currency returned by Graph.
 
 Malformed or self-inconsistent confirmations fail before any Graph request.
-Ownership and effective spend/schedule mismatches fail after read verification
-but before the write. Mutations are deliberately
+Ownership, budget kind/owner, and effective spend/schedule mismatches fail after
+read verification but before the write. Mutations are deliberately
 excluded from the initial `meta/mcp` provider; the SDK guard exists so a future
 write surface cannot bypass the policy.
 

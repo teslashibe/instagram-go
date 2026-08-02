@@ -10,13 +10,14 @@ import (
 )
 
 type AccountInsightsInput struct {
-	AccountID string               `json:"account_id,omitempty" jsonschema:"description=Instagram professional account ID; defaults to selected account"`
-	Metrics   []meta.AccountMetric `json:"metrics" jsonschema:"description=account insight metrics,required,minItems=1"`
-	Period    meta.Period          `json:"period" jsonschema:"description=aggregation period,enum=day,enum=week,enum=days_28,required"`
-	Since     string               `json:"since" jsonschema:"description=start date in YYYY-MM-DD format,required"`
-	Until     string               `json:"until" jsonschema:"description=end date in YYYY-MM-DD format,required"`
-	Limit     int                  `json:"limit,omitempty" jsonschema:"minimum=1,maximum=100,default=25"`
-	Cursor    string               `json:"cursor,omitempty" jsonschema:"description=opaque next_cursor from a previous response"`
+	AccountID  string                 `json:"account_id,omitempty" jsonschema:"description=Instagram professional account ID; defaults to selected account"`
+	Metrics    []meta.AccountMetric   `json:"metrics" jsonschema:"description=account insight metrics,required,minItems=1"`
+	MetricType meta.InsightMetricType `json:"metric_type" jsonschema:"description=Graph insight response type; metrics cannot mix types,enum=time_series,enum=total_value,required"`
+	Period     meta.Period            `json:"period" jsonschema:"description=aggregation period,enum=day,enum=week,enum=days_28,required"`
+	Since      string                 `json:"since" jsonschema:"description=start date in YYYY-MM-DD format,required"`
+	Until      string                 `json:"until" jsonschema:"description=end date in YYYY-MM-DD format,required"`
+	Limit      int                    `json:"limit,omitempty" jsonschema:"minimum=1,maximum=100,default=25"`
+	Cursor     string                 `json:"cursor,omitempty" jsonschema:"description=opaque next_cursor from a previous response"`
 }
 
 func accountInsights(ctx context.Context, c *meta.Client, in AccountInsightsInput) (any, error) {
@@ -25,7 +26,7 @@ func accountInsights(ctx context.Context, c *meta.Client, in AccountInsightsInpu
 		return nil, toolError(err)
 	}
 	page, err := c.GetAccountInsights(ctx, meta.AccountInsightsRequest{
-		AccountID: in.AccountID, Metrics: in.Metrics, Period: in.Period, Timeframe: frame,
+		AccountID: in.AccountID, Metrics: in.Metrics, MetricType: in.MetricType, Period: in.Period, Timeframe: frame,
 		ListOptions: meta.ListOptions{Limit: in.Limit, Cursor: in.Cursor},
 	})
 	return page, toolError(err)

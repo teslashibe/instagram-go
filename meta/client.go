@@ -28,10 +28,13 @@ const (
 // Config contains only official Meta OAuth settings. It never accepts or
 // stores private Instagram cookies.
 type Config struct {
-	AppID              string
-	AppSecret          string
-	RedirectURI        string
-	TokenStore         TokenStore
+	AppID       string
+	AppSecret   string
+	RedirectURI string
+	TokenStore  TokenStore
+	// GrantedScopes is the scope set to request when AuthorizationURL is called
+	// without an override. Actual grants are always read from /me/permissions
+	// and stored on Token.Scopes.
 	GrantedScopes      []Scope
 	PageID             string
 	InstagramAccountID string
@@ -100,19 +103,19 @@ func WithClock(now func() time.Time) Option {
 // Client is an official Meta Graph/Marketing API client. It is safe for
 // concurrent use and has no dependency on the root cookie-auth Client.
 type Client struct {
-	appID          string
-	appSecret      string
-	redirectURI    string
-	tokenStore     TokenStore
-	grantedScopes  []Scope
-	allowMutations bool
-	httpClient     *http.Client
-	graphBaseURL   string
-	oauthBaseURL   string
-	apiVersion     string
-	now            func() time.Time
-	maxAttempts    int
-	retryBase      time.Duration
+	appID           string
+	appSecret       string
+	redirectURI     string
+	tokenStore      TokenStore
+	requestedScopes []Scope
+	allowMutations  bool
+	httpClient      *http.Client
+	graphBaseURL    string
+	oauthBaseURL    string
+	apiVersion      string
+	now             func() time.Time
+	maxAttempts     int
+	retryBase       time.Duration
 
 	selectionMu sync.RWMutex
 	selection   AccountSelection
@@ -131,26 +134,30 @@ func New(config Config, options ...Option) (*Client, error) {
 	if config.TokenStore == nil {
 		return nil, fmt.Errorf("%w: TokenStore is required", ErrInvalidConfig)
 	}
-	if err := validateScopes(config.GrantedScopes, config.EnableAdMutations); err != nil {
+	configuredScopes := append([]Scope(nil), config.GrantedScopes...)
+	if len(configuredScopes) == 0 {
+		configuredScopes = append([]Scope(nil), DefaultReadScopes...)
+	}
+	if err := validateScopes(configuredScopes, config.EnableAdMutations); err != nil {
 		return nil, err
 	}
-	if config.EnableAdMutations && !containsScope(config.GrantedScopes, ScopeAdsManagement) {
-		return nil, &ScopeError{Required: []Scope{ScopeAdsManagement}, Granted: config.GrantedScopes}
+	if config.EnableAdMutations && !containsScope(configuredScopes, ScopeAdsManagement) {
+		return nil, &ScopeError{Required: []Scope{ScopeAdsManagement}, Granted: configuredScopes}
 	}
 	c := &Client{
-		appID:          config.AppID,
-		appSecret:      config.AppSecret,
-		redirectURI:    config.RedirectURI,
-		tokenStore:     config.TokenStore,
-		grantedScopes:  append([]Scope(nil), config.GrantedScopes...),
-		allowMutations: config.EnableAdMutations,
-		httpClient:     &http.Client{Timeout: defaultTimeout},
-		graphBaseURL:   DefaultGraphBaseURL,
-		oauthBaseURL:   DefaultOAuthBaseURL,
-		apiVersion:     DefaultAPIVersion,
-		now:            time.Now,
-		maxAttempts:    defaultMaxAttempts,
-		retryBase:      defaultRetryBase,
+		appID:           config.AppID,
+		appSecret:       config.AppSecret,
+		redirectURI:     config.RedirectURI,
+		tokenStore:      config.TokenStore,
+		requestedScopes: configuredScopes,
+		allowMutations:  config.EnableAdMutations,
+		httpClient:      &http.Client{Timeout: defaultTimeout},
+		graphBaseURL:    DefaultGraphBaseURL,
+		oauthBaseURL:    DefaultOAuthBaseURL,
+		apiVersion:      DefaultAPIVersion,
+		now:             time.Now,
+		maxAttempts:     defaultMaxAttempts,
+		retryBase:       defaultRetryBase,
 		selection: AccountSelection{
 			PageID: config.PageID, InstagramAccountID: config.InstagramAccountID,
 			AdAccountID: normalizeAdAccountID(config.AdAccountID),
@@ -163,11 +170,11 @@ func New(config Config, options ...Option) (*Client, error) {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, query url.Values, body url.Values, required []Scope, out any) error {
-	if err := c.requireScopes(ctx, required...); err != nil {
-		return err
-	}
 	token, err := c.currentToken(ctx)
 	if err != nil {
+		return err
+	}
+	if err := requireGrantedScopes(token.Scopes, required...); err != nil {
 		return err
 	}
 	attempts := 1
@@ -258,10 +265,14 @@ func (c *Client) currentToken(ctx context.Context) (Token, error) {
 }
 
 func (c *Client) requireScopes(ctx context.Context, required ...Scope) error {
-	granted := c.grantedScopes
-	if token, err := c.tokenStore.Load(ctx); err == nil && len(token.Scopes) > 0 {
-		granted = token.Scopes
+	token, err := c.currentToken(ctx)
+	if err != nil {
+		return err
 	}
+	return requireGrantedScopes(token.Scopes, required...)
+}
+
+func requireGrantedScopes(granted []Scope, required ...Scope) error {
 	var missing []Scope
 	for _, scope := range required {
 		if !containsScope(granted, scope) {

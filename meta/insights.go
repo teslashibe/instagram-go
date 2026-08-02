@@ -36,6 +36,15 @@ const (
 	AccountMetricFollowsAndUnfollows AccountMetric = "follows_and_unfollows"
 )
 
+// InsightMetricType selects the Graph response shape for account insights.
+// A single request cannot mix time-series and total-value metrics.
+type InsightMetricType string
+
+const (
+	MetricTypeTimeSeries InsightMetricType = "time_series"
+	MetricTypeTotalValue InsightMetricType = "total_value"
+)
+
 type MediaMetric string
 
 const (
@@ -62,10 +71,11 @@ const (
 )
 
 type AccountInsightsRequest struct {
-	AccountID string          `json:"account_id,omitempty"`
-	Metrics   []AccountMetric `json:"metrics"`
-	Period    Period          `json:"period"`
-	Timeframe Timeframe       `json:"timeframe"`
+	AccountID  string            `json:"account_id,omitempty"`
+	Metrics    []AccountMetric   `json:"metrics"`
+	MetricType InsightMetricType `json:"metric_type"`
+	Period     Period            `json:"period"`
+	Timeframe  Timeframe         `json:"timeframe"`
 	ListOptions
 }
 
@@ -103,10 +113,11 @@ func (c *Client) GetAccountInsights(ctx context.Context, request AccountInsights
 	}
 	path := accountID + "/insights"
 	q := url.Values{
-		"metric": {joinAccountMetrics(request.Metrics)},
-		"period": {string(request.Period)},
-		"since":  {strconv.FormatInt(request.Timeframe.Since.Unix(), 10)},
-		"until":  {strconv.FormatInt(request.Timeframe.Until.Unix(), 10)},
+		"metric":      {joinAccountMetrics(request.Metrics)},
+		"metric_type": {string(request.MetricType)},
+		"period":      {string(request.Period)},
+		"since":       {strconv.FormatInt(request.Timeframe.Since.Unix(), 10)},
+		"until":       {strconv.FormatInt(request.Timeframe.Until.Unix(), 10)},
 	}
 	q, binding, err := preparePageQuery(path, q, request.ListOptions)
 	if err != nil {
@@ -155,6 +166,25 @@ func validateAccountInsights(request AccountInsightsRequest) error {
 	}
 	if err := validateMetricPeriodCombinations(request.Metrics, request.Period, compatibility); err != nil {
 		return err
+	}
+	metricTypes := map[AccountMetric]InsightMetricType{
+		AccountMetricReach:               MetricTypeTimeSeries,
+		AccountMetricProfileViews:        MetricTypeTimeSeries,
+		AccountMetricWebsiteClicks:       MetricTypeTimeSeries,
+		AccountMetricAccountsEngaged:     MetricTypeTotalValue,
+		AccountMetricTotalInteractions:   MetricTypeTotalValue,
+		AccountMetricFollowsAndUnfollows: MetricTypeTotalValue,
+	}
+	switch request.MetricType {
+	case MetricTypeTimeSeries, MetricTypeTotalValue:
+	default:
+		return fmt.Errorf("%w: metric_type must be time_series or total_value", ErrInvalidInput)
+	}
+	for _, metric := range request.Metrics {
+		if metricTypes[metric] != request.MetricType {
+			return fmt.Errorf("%w: metric %q requires metric_type %q and cannot be mixed with %q metrics",
+				ErrInvalidInput, metric, metricTypes[metric], request.MetricType)
+		}
 	}
 	return validateListOptions(request.ListOptions)
 }

@@ -68,7 +68,7 @@ func TestToolsExposeTypedInputsAndStructuredErrors(t *testing.T) {
 	if !ok {
 		t.Fatalf("properties=%#v", tool.InputSchema["properties"])
 	}
-	for _, field := range []string{"account_id", "metrics", "period", "since", "until", "limit", "cursor"} {
+	for _, field := range []string{"account_id", "metrics", "metric_type", "period", "since", "until", "limit", "cursor"} {
 		if _, exists := properties[field]; !exists {
 			t.Errorf("schema lacks %s", field)
 		}
