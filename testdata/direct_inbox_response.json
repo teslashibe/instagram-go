@@ -1,0 +1,31 @@
+{
+  "inbox": {
+    "threads": [
+      {
+        "thread_id": "340282366841710300949128199900000000001",
+        "thread_title": "<redacted>",
+        "users": [
+          {"pk": "100000000000000001", "username": "burner_peer", "full_name": "<redacted>"}
+        ],
+        "items": [
+          {
+            "item_id": "340282366841710300949128199900000000002",
+            "user_id": "100000000000000001",
+            "item_type": "text",
+            "text": "<redacted>",
+            "timestamp": "1785531000000000",
+            "client_context": "<redacted>"
+          }
+        ],
+        "last_activity_at": "1785531000000000",
+        "is_group": false,
+        "is_pending": false,
+        "muted": false,
+        "read_state": 0
+      }
+    ],
+    "oldest_cursor": "<redacted-cursor>",
+    "has_older": true
+  },
+  "status": "ok"
+}

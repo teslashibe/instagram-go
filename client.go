@@ -24,6 +24,9 @@ type requestOptions struct {
 	// IsWrite marks the call as a write action — uses writeGap and is more
 	// strictly classified as soft-blocked when the server redirects.
 	IsWrite bool
+	// MaxAttempts overrides the client retry count for this request. A value of
+	// zero uses the client default. Non-idempotent private-API mutations use 1.
+	MaxAttempts int
 	// XReferer overrides the Referer header (some endpoints want a tag/profile URL).
 	Referer string
 	// ExtraHeaders are merged on top of the defaults.
@@ -84,6 +87,9 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 	}
 
 	maxAttempts := c.maxRetries
+	if opts.MaxAttempts > 0 {
+		maxAttempts = opts.MaxAttempts
+	}
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
