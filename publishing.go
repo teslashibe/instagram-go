@@ -189,12 +189,14 @@ func (c *Client) PublishStory(ctx context.Context, in PublishStoryInput) (*Publi
 	if err != nil {
 		return nil, err
 	}
-	if err := c.uploadAsset(ctx, media, "2", media.uploadID); err != nil {
-		return nil, publishStageError("story_media_upload", media, uploadFailureMayBePartial(err), err)
-	}
 	thumb, err := c.prepareRelatedImage("story_thumbnail", in.IdempotencyKey, *in.Thumbnail, media)
 	if err != nil {
-		return nil, publishStageError("story_thumbnail_prepare", media, true, err)
+		// Both assets must pass local validation and bounded reads before the
+		// first mutation. A bad thumbnail must never strand an accepted video.
+		return nil, err
+	}
+	if err := c.uploadAsset(ctx, media, "2", media.uploadID); err != nil {
+		return nil, publishStageError("story_media_upload", media, uploadFailureMayBePartial(err), err)
 	}
 	if err := c.uploadAsset(ctx, thumb, "1", media.uploadID+"_0"); err != nil {
 		return nil, publishStageError("story_thumbnail_upload", media, true, err)

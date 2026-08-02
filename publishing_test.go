@@ -258,6 +258,58 @@ func TestPublishStoryRejectsUncapturedPhotoStoryBeforeHTTP(t *testing.T) {
 	}
 }
 
+func TestPublishStoryPreflightsThumbnailBeforeUploadingVideo(t *testing.T) {
+	tests := []struct {
+		name      string
+		thumbnail UploadSource
+		want      error
+	}{
+		{
+			name: "invalid MIME type",
+			thumbnail: UploadSource{
+				Reader: bytes.NewReader([]byte("thumb")), Filename: "thumb.png", MIMEType: "image/png",
+				Size: 5, Width: 1080, Height: 1920,
+			},
+			want: ErrInvalidPublishInput,
+		},
+		{
+			name: "declared size exceeds limit",
+			thumbnail: UploadSource{
+				Reader: bytes.NewReader([]byte("thumb")), Filename: "thumb.jpg", MIMEType: "image/jpeg",
+				Size: 6, Width: 1080, Height: 1920,
+			},
+			want: ErrUploadTooLarge,
+		},
+		{
+			name: "stream length mismatch",
+			thumbnail: UploadSource{
+				Reader: bytes.NewReader([]byte("thumb")), Filename: "thumb.jpg", MIMEType: "image/jpeg",
+				Size: 4, Width: 1080, Height: 1920,
+			},
+			want: ErrInvalidPublishInput,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &publishTransport{handler: successfulPublishHandler}
+			client := newPublishingClient(t, transport, WithPublishingLimits(5, 8))
+			_, err := client.PublishStory(context.Background(), PublishStoryInput{
+				Media: videoSource([]byte("video")), Thumbnail: &tt.thumbnail,
+				IdempotencyKey: "story-thumbnail-preflight",
+			})
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want errors.Is(%v)", err, tt.want)
+			}
+			if errors.Is(err, ErrPartialUpload) {
+				t.Fatalf("local thumbnail rejection was classified as partial: %v", err)
+			}
+			if len(transport.requests) != 0 {
+				t.Fatalf("invalid thumbnail made %d HTTP requests", len(transport.requests))
+			}
+		})
+	}
+}
+
 func TestPublishingRejectsOversizeAndMismatchedStreamsBeforeHTTP(t *testing.T) {
 	transport := &publishTransport{handler: successfulPublishHandler}
 	client := newPublishingClient(t, transport, WithPublishingLimits(4, 8))
