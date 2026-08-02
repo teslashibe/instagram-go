@@ -38,7 +38,18 @@ The capture tool validates:
 - raw upload header names: `X-Entity-Type`, `X-Entity-Name`,
   `X-Entity-Length`, `Offset`, `X-Instagram-Rupload-Params`, and
   `X_FB_PHOTO_WATERFALL_ID`;
+- authenticated mobile identity header names plus the safe `User-Agent`,
+  `X-IG-App-ID`, `X-IG-Capabilities`, and `X-IG-Connection-Type` values that
+  must be aligned with the SDK request profile (cookie and CSRF values remain
+  redacted);
+- the embedded `X-Instagram-Rupload-Params` field set and the captured values
+  or redacted shapes for `media_type`, `upload_id`, dimensions, video duration,
+  and `xsharing_user_ids`;
 - required form/query field names for finish, status, configure, and delete;
+- the protocol values consumed by the implementation: zero offset, entity MIME
+  type/name/length shapes, `source_type=4`, `video=1`, per-flow finish and
+  delete media types, Android device-ID shape, Reel preview/audio/poster flags,
+  and Story configure mode/timestamp shape;
 - the same upload ID across primary upload, thumbnail, finish, status, and
   configure;
 - the same client context across the upload waterfall and configure;
@@ -51,10 +62,12 @@ The capture tool validates:
 
 Generic `status=ok` responses, incorrect methods/hosts, unknown states,
 uncorrelated IDs, incorrect delete types, and unconfirmed cleanup all fail
-closed. Generated reports contain only methods, redacted paths, status codes,
-request header/form/query names, response field paths, processing-state enum
-values, and delete-type enum values. They never retain credential values,
-binary bodies, captions, upload IDs, client IDs, or media IDs.
+closed. Generated reports retain methods, redacted paths, status codes, request
+header/form/query and embedded-rupload names, safe fixed protocol values,
+redacted dynamic-value shapes, response field paths, processing-state enums,
+and delete-type enums. They never retain credential values, binary bodies,
+captions, upload IDs, client IDs, media IDs, dimensions, byte lengths, or
+timestamps.
 
 ## Typed draft and deterministic identifiers
 

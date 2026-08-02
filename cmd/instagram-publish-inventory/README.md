@@ -21,9 +21,13 @@ The command fails closed unless each flow uses `https://i.instagram.com`, the
 captured methods, ordered stages, required header/form/query names, correlated
 upload/client/media IDs, known processing states ending in ready, its per-kind
 delete discriminator, and a post-delete exact-ID readback proving the media is
-unavailable. Photo capture includes its status request; Reel and video Story
-captures include both pending and ready processing observations.
+unavailable. It also validates and reports the embedded rupload field set,
+mobile request-profile values, entity value shapes, finish/configure constants,
+Reel flags, and Story configure values used by the SDK. Photo capture includes
+its status request; Reel and video Story captures include both pending and ready
+processing observations.
 
 HARs, cookies, binary content, captions, and IDs must remain outside the
-repository. Human review and a secret scan are still required before committing
-the report and enabling `PublishingCaptureVersion`.
+repository. Reports retain only safe constants and redacted shapes for dynamic
+values. Human review and a secret scan are still required before committing the
+report and enabling `PublishingCaptureVersion`.

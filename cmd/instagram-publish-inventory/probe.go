@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,8 @@ type capturedSurface struct {
 	RequestHeaders     []string
 	RequestFields      []string
 	RequestQueryFields []string
+	RuploadParamFields []string
+	ProtocolValues     []string
 	ResponseFields     []string
 	StatusCode         int
 }
@@ -76,6 +79,7 @@ type inspectedPublishingEntry struct {
 	headers       map[string]string
 	form          url.Values
 	response      map[string]any
+	ruploadParams map[string]any
 	processing    string
 	configuredID  string
 	deletedID     string
@@ -158,14 +162,13 @@ func inspectPublishingHAR(kind, path string) (flowCapture, error) {
 		}
 		if ok {
 			entries = append(entries, inspected)
-			out.Surfaces = append(out.Surfaces, inspected.surface)
 		}
 	}
 	if err := validateStageOrder(required, entries); err != nil {
 		return flowCapture{}, err
 	}
 
-	var uploadID, clientContext, configuredID, deletedID, confirmedID string
+	var uploadID, clientContext, uploadWidth, uploadHeight, configuredID, deletedID, confirmedID string
 	for index := range entries {
 		item := &entries[index]
 		if err := validatePublishingSurface(kind, item); err != nil {
@@ -178,6 +181,8 @@ func inspectPublishingHAR(kind, path string) (flowCapture, error) {
 			}
 			uploadID = item.uploadID
 			clientContext = item.clientContext
+			uploadWidth = mapString(item.ruploadParams, "upload_media_width")
+			uploadHeight = mapString(item.ruploadParams, "upload_media_height")
 		case "thumbnail_upload":
 			if item.uploadID != uploadID {
 				return flowCapture{}, errors.New("thumbnail upload_id does not match the primary upload")
@@ -204,6 +209,9 @@ func inspectPublishingHAR(kind, path string) (flowCapture, error) {
 			if item.form.Get("client_context") != clientContext {
 				return flowCapture{}, errors.New("configure client_context does not match the upload waterfall ID")
 			}
+			if item.form.Get("upload_media_width") != uploadWidth || item.form.Get("upload_media_height") != uploadHeight {
+				return flowCapture{}, errors.New("configure dimensions do not match the primary rupload parameters")
+			}
 			configuredID = item.configuredID
 		case "exact_media_delete":
 			deletedID = item.deletedID
@@ -211,6 +219,7 @@ func inspectPublishingHAR(kind, path string) (flowCapture, error) {
 		case "delete_confirmation":
 			confirmedID = item.confirmedID
 		}
+		out.Surfaces = append(out.Surfaces, item.surface)
 	}
 	if uploadID == "" || clientContext == "" {
 		return flowCapture{}, errors.New("primary upload lacks correlated upload_id or client context")
@@ -317,6 +326,9 @@ func validatePublishingSurface(kind string, item *inspectedPublishingEntry) erro
 	if item.url.Scheme != "https" || !strings.EqualFold(item.url.Host, "i.instagram.com") {
 		return fmt.Errorf("unexpected host %q; captures must use https://i.instagram.com", item.surface.Host)
 	}
+	if err := validateMobileIdentity(item); err != nil {
+		return err
+	}
 	wantMethod := http.MethodPost
 	if stage == "upload_status" || stage == "delete_confirmation" {
 		wantMethod = http.MethodGet
@@ -333,6 +345,8 @@ func validatePublishingSurface(kind string, item *inspectedPublishingEntry) erro
 			return err
 		}
 		item.confirmedID = id
+		item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+			"path media_id=<configured_media_id>", "response media unavailable=true")
 		return nil
 	}
 	if item.entry.Response.Status < 200 || item.entry.Response.Status >= 300 {
@@ -347,32 +361,99 @@ func validatePublishingSurface(kind string, item *inspectedPublishingEntry) erro
 		if err := requireNames(item.surface.RequestHeaders, rawUploadHeaders); err != nil {
 			return fmt.Errorf("headers: %w", err)
 		}
-		var params struct {
-			UploadID string `json:"upload_id"`
-		}
-		if err := json.Unmarshal([]byte(item.headers["x-instagram-rupload-params"]), &params); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(item.headers["x-instagram-rupload-params"]))
+		decoder.UseNumber()
+		if err := decoder.Decode(&item.ruploadParams); err != nil {
 			return fmt.Errorf("decode X-Instagram-Rupload-Params: %w", err)
 		}
-		if params.UploadID == "" {
+		item.surface.RuploadParamFields = sortedMapKeys(item.ruploadParams)
+		if err := requireNames(item.surface.RuploadParamFields, []string{
+			"media_type", "upload_id", "upload_media_height", "upload_media_width", "xsharing_user_ids",
+		}); err != nil {
+			return fmt.Errorf("X-Instagram-Rupload-Params: %w", err)
+		}
+		if stage == "video_upload" {
+			if err := requireNames(item.surface.RuploadParamFields, []string{"upload_media_duration_ms"}); err != nil {
+				return fmt.Errorf("X-Instagram-Rupload-Params: %w", err)
+			}
+		}
+		item.uploadID = mapString(item.ruploadParams, "upload_id")
+		if item.uploadID == "" {
 			return errors.New("rupload params have no upload_id")
 		}
-		item.uploadID = params.UploadID
 		item.clientContext = strings.TrimSpace(item.headers["x_fb_photo_waterfall_id"])
 		if item.clientContext == "" {
 			return errors.New("X_FB_PHOTO_WATERFALL_ID is empty")
 		}
+		wantMediaType := "1"
+		wantEntityType := "image/jpeg"
+		if stage == "video_upload" {
+			wantMediaType = "2"
+			wantEntityType = "video/mp4"
+		}
+		if got := mapString(item.ruploadParams, "media_type"); got != wantMediaType {
+			return fmt.Errorf("rupload media_type=%q, want %q", got, wantMediaType)
+		}
+		if got := mapString(item.ruploadParams, "xsharing_user_ids"); got != "[]" {
+			return fmt.Errorf("rupload xsharing_user_ids=%q, want []", got)
+		}
+		if !positiveMapInteger(item.ruploadParams, "upload_media_width") ||
+			!positiveMapInteger(item.ruploadParams, "upload_media_height") {
+			return errors.New("rupload dimensions must be positive integers")
+		}
+		if stage == "video_upload" && !positiveMapInteger(item.ruploadParams, "upload_media_duration_ms") {
+			return errors.New("rupload video duration must be a positive integer")
+		}
+		if got := strings.ToLower(strings.TrimSpace(item.headers["x-entity-type"])); got != wantEntityType {
+			return fmt.Errorf("X-Entity-Type=%q, want %q", got, wantEntityType)
+		}
+		if strings.TrimSpace(item.headers["offset"]) != "0" {
+			return errors.New("Offset must be 0 for the captured single-request upload")
+		}
+		if !positiveInteger(item.headers["x-entity-length"]) {
+			return errors.New("X-Entity-Length must be a positive integer")
+		}
+		wantEntityName := item.uploadID
+		entityPlaceholder := "<upload_id>"
+		if stage == "thumbnail_upload" {
+			wantEntityName += "_0"
+			entityPlaceholder += "_0"
+		}
+		if strings.TrimSpace(item.headers["x-entity-name"]) != wantEntityName {
+			return errors.New("X-Entity-Name is not correlated with the captured upload_id")
+		}
 		if ack := statusString(item.response, "upload_id"); ack != "" && ack != item.uploadID {
 			return errors.New("rupload response upload_id does not match request")
 		}
-		if stage != "thumbnail_upload" &&
-			!strings.Contains(strings.TrimRight(item.url.Path, "/"), item.uploadID) {
-			return errors.New("primary rupload entity path is not correlated with upload_id")
+		if !strings.HasSuffix(strings.TrimRight(item.url.Path, "/"), "/"+wantEntityName) {
+			return errors.New("rupload entity path is not correlated with X-Entity-Name")
+		}
+		item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+			"header Offset=0", "header X-Entity-Type="+wantEntityType,
+			"header X-Entity-Name="+entityPlaceholder,
+			"header X-Entity-Length=<media_byte_length>",
+			"header X_FB_PHOTO_WATERFALL_ID=<client_context>",
+			"rupload media_type="+wantMediaType, "rupload upload_id=<upload_id>",
+			"rupload upload_media_width=<positive_pixels>",
+			"rupload upload_media_height=<positive_pixels>",
+			`rupload xsharing_user_ids="[]"`)
+		if stage == "video_upload" {
+			item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+				"rupload upload_media_duration_ms=<positive_milliseconds>")
 		}
 	case "upload_finish":
 		if err := requireNames(item.surface.RequestFields,
 			[]string{"media_type", "source_type", "upload_id", "video"}); err != nil {
 			return err
 		}
+		wantMediaType := map[string]string{"reel": "clips", "story": "story"}[kind]
+		if item.form.Get("source_type") != "4" || item.form.Get("video") != "1" ||
+			item.form.Get("media_type") != wantMediaType {
+			return fmt.Errorf("upload_finish values must be source_type=4, video=1, media_type=%s", wantMediaType)
+		}
+		item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+			"form upload_id=<upload_id>", "form source_type=4", "form video=1",
+			"form media_type="+wantMediaType)
 	case "upload_status":
 		if err := requireNames(item.surface.RequestQueryFields, []string{"upload_id"}); err != nil {
 			return err
@@ -381,16 +462,51 @@ func validatePublishingSurface(kind string, item *inspectedPublishingEntry) erro
 		if !pendingProcessingStates[item.processing] && !readyProcessingStates[item.processing] {
 			return fmt.Errorf("uncaptured processing state %q", item.processing)
 		}
+		item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+			"query upload_id=<upload_id>", "response processing_info.state="+item.processing)
 	case "photo_configure", "reel_configure", "story_configure":
 		required := []string{
-			"caption", "client_context", "source_type", "upload_id",
+			"caption", "client_context", "device_id", "source_type", "upload_id",
 			"upload_media_height", "upload_media_width",
+		}
+		if stage == "reel_configure" {
+			required = append(required, "clips_audio_type", "clips_share_preview_to_feed", "poster_frame_index")
 		}
 		if stage == "story_configure" {
 			required = append(required, "configure_mode", "story_media_creation_date")
 		}
 		if err := requireNames(item.surface.RequestFields, required); err != nil {
 			return err
+		}
+		if item.form.Get("source_type") != "4" {
+			return errors.New("configure source_type must be 4")
+		}
+		if !positiveInteger(item.form.Get("upload_media_width")) || !positiveInteger(item.form.Get("upload_media_height")) {
+			return errors.New("configure dimensions must be positive integers")
+		}
+		if deviceID := item.form.Get("device_id"); !strings.HasPrefix(deviceID, "android-") || len(deviceID) == len("android-") {
+			return errors.New("configure device_id must use the captured android-<viewer_id> shape")
+		}
+		item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+			"form upload_id=<upload_id>", "form caption=<redacted>",
+			"form client_context=<client_context>", "form device_id=android-<viewer_id>",
+			"form source_type=4", "form upload_media_width=<positive_pixels>",
+			"form upload_media_height=<positive_pixels>")
+		if stage == "reel_configure" {
+			if item.form.Get("clips_share_preview_to_feed") != "1" ||
+				item.form.Get("clips_audio_type") != "original" || item.form.Get("poster_frame_index") != "0" {
+				return errors.New("Reel configure values must be clips_share_preview_to_feed=1, clips_audio_type=original, poster_frame_index=0")
+			}
+			item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+				"form clips_share_preview_to_feed=1", "form clips_audio_type=original",
+				"form poster_frame_index=0")
+		}
+		if stage == "story_configure" {
+			if item.form.Get("configure_mode") != "1" || !positiveInteger(item.form.Get("story_media_creation_date")) {
+				return errors.New("Story configure values must be configure_mode=1 and a positive creation timestamp")
+			}
+			item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+				"form configure_mode=1", "form story_media_creation_date=<unix_seconds>")
 		}
 		item.configuredID = nestedString(item.response, "media", "pk")
 		if item.configuredID == "" {
@@ -406,11 +522,70 @@ func validatePublishingSurface(kind string, item *inspectedPublishingEntry) erro
 		}
 		item.deletedID = id
 		item.deleteType = item.form.Get("media_type")
-		if item.deleteType == "" {
-			return errors.New("delete media_type is empty")
+		wantDeleteType := map[string]string{"photo": "PHOTO", "reel": "VIDEO", "story": "STORY"}[kind]
+		if item.deleteType != wantDeleteType {
+			return fmt.Errorf("delete media_type=%q, want %q", item.deleteType, wantDeleteType)
 		}
+		item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+			"path media_id=<configured_media_id>", "form media_type="+wantDeleteType)
 	}
 	return nil
+}
+
+func validateMobileIdentity(item *inspectedPublishingEntry) error {
+	required := []string{
+		"cookie", "user-agent", "x-csrftoken", "x-ig-app-id",
+		"x-ig-capabilities", "x-ig-connection-type",
+	}
+	if err := requireNames(item.surface.RequestHeaders, required); err != nil {
+		return fmt.Errorf("mobile identity headers: %w", err)
+	}
+	for _, name := range []string{"user-agent", "x-ig-app-id", "x-ig-capabilities", "x-ig-connection-type"} {
+		if strings.TrimSpace(item.headers[name]) == "" {
+			return fmt.Errorf("mobile identity header %s is empty", name)
+		}
+	}
+	if strings.TrimSpace(item.headers["cookie"]) == "" || strings.TrimSpace(item.headers["x-csrftoken"]) == "" {
+		return errors.New("capture lacks authenticated Cookie or X-CSRFToken values")
+	}
+	item.surface.ProtocolValues = append(item.surface.ProtocolValues,
+		"header User-Agent="+strings.TrimSpace(item.headers["user-agent"]),
+		"header X-IG-App-ID="+strings.TrimSpace(item.headers["x-ig-app-id"]),
+		"header X-IG-Capabilities="+strings.TrimSpace(item.headers["x-ig-capabilities"]),
+		"header X-IG-Connection-Type="+strings.TrimSpace(item.headers["x-ig-connection-type"]),
+		"header Cookie=<redacted>", "header X-CSRFToken=<redacted>")
+	return nil
+}
+
+func sortedMapKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func mapString(values map[string]any, key string) string {
+	switch value := values[key].(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case json.Number:
+		return value.String()
+	case float64:
+		return strconv.FormatInt(int64(value), 10)
+	default:
+		return ""
+	}
+}
+
+func positiveMapInteger(values map[string]any, key string) bool {
+	return positiveInteger(mapString(values, key))
+}
+
+func positiveInteger(value string) bool {
+	number, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	return err == nil && number > 0
 }
 
 func publishingStage(path string) string {
@@ -443,7 +618,8 @@ func requestFormValues(entry harEntry) url.Values {
 	for _, param := range entry.Request.PostData.Params {
 		values.Add(param.Name, param.Value)
 	}
-	if entry.Request.PostData.Text != "" {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(entry.Request.PostData.MimeType, ";")[0]))
+	if entry.Request.PostData.Text != "" && mediaType == "application/x-www-form-urlencoded" {
 		if parsed, err := url.ParseQuery(entry.Request.PostData.Text); err == nil {
 			for key, items := range parsed {
 				values[key] = append([]string(nil), items...)

@@ -12,7 +12,7 @@ func renderReport(report inventoryReport) string {
 	fmt.Fprintf(&b, "Captured at: `%s`  \n", report.CapturedAt.Format("2006-01-02T15:04:05Z"))
 	fmt.Fprintln(&b, "Result: **complete burner photo, Reel, and video Story publish-and-delete flows**.")
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "> Generated from disposable burner content. Credential values, request values, binary bodies, captions, IDs, entity names, and response values are omitted.")
+	fmt.Fprintln(&b, "> Generated from disposable burner content. Credentials, binary bodies, captions, and dynamic IDs/metadata are redacted. Safe protocol constants and value shapes are retained for implementation review.")
 	fmt.Fprintln(&b)
 	for _, flow := range report.Flows {
 		fmt.Fprintf(&b, "## %s\n\n", strings.ToUpper(flow.Kind[:1])+flow.Kind[1:])
@@ -23,6 +23,8 @@ func renderReport(report inventoryReport) string {
 			fmt.Fprintf(&b, "- Request header names: %s\n", markdownList(surface.RequestHeaders))
 			fmt.Fprintf(&b, "- Request field names: %s\n", markdownList(surface.RequestFields))
 			fmt.Fprintf(&b, "- Request query names: %s\n", markdownList(surface.RequestQueryFields))
+			fmt.Fprintf(&b, "- Embedded rupload parameter names: %s\n", markdownList(surface.RuploadParamFields))
+			fmt.Fprintf(&b, "- Captured protocol values/shapes: %s\n", markdownList(surface.ProtocolValues))
 			fmt.Fprintf(&b, "- Response field paths: %s\n\n", markdownList(surface.ResponseFields))
 		}
 		fmt.Fprintf(&b, "- Captured processing states: %s\n", markdownList(flow.ProcessingStates))

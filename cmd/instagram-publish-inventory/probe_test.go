@@ -24,7 +24,7 @@ func TestCaptureInventoryRequiresStrictCompleteFlowsAndRedactsValues(t *testing.
 	}
 	rendered := renderReport(report)
 	for _, secret := range []string{
-		"cookie-secret", "caption-secret", "123456789", "client-secret", "999_42",
+		"cookie-secret", "csrf-secret", "caption-secret", "123456789", "client-secret", "999_42",
 	} {
 		if strings.Contains(rendered, secret) {
 			t.Fatalf("report leaked %q:\n%s", secret, rendered)
@@ -39,6 +39,10 @@ func TestCaptureInventoryRequiresStrictCompleteFlowsAndRedactsValues(t *testing.
 		"`$.media.pk`",
 		"`processing`, `ready`",
 		"`VIDEO`",
+		"Embedded rupload parameter names",
+		"`rupload xsharing_user_ids=\"[]\"`",
+		"`form clips_audio_type=original`",
+		"`form device_id=android-<viewer_id>`",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("report lacks %q:\n%s", want, rendered)
@@ -52,6 +56,49 @@ func TestPublishingInventoryRejectsIncompleteOrUncorrelatedContracts(t *testing.
 		mutate func([]map[string]any) []map[string]any
 		want   string
 	}{
+		{
+			name: "incomplete embedded rupload schema",
+			mutate: func(entries []map[string]any) []map[string]any {
+				setHeader(entries[0], "X-Instagram-Rupload-Params", `{"upload_id":"123456789"}`)
+				return entries
+			},
+			want: "X-Instagram-Rupload-Params",
+		},
+		{
+			name: "wrong rupload protocol value",
+			mutate: func(entries []map[string]any) []map[string]any {
+				setHeader(entries[0], "Offset", "1")
+				return entries
+			},
+			want: "Offset must be 0",
+		},
+		{
+			name: "missing mobile identity",
+			mutate: func(entries []map[string]any) []map[string]any {
+				headers := request(entries[0])["headers"].([]map[string]string)
+				request(entries[0])["headers"] = headersWithout(headers, "X-IG-App-ID")
+				return entries
+			},
+			want: "mobile identity headers",
+		},
+		{
+			name: "wrong Reel configure value",
+			mutate: func(entries []map[string]any) []map[string]any {
+				postData := request(entries[5])["postData"].(map[string]any)
+				postData["text"] = strings.Replace(postData["text"].(string), "clips_audio_type=original", "clips_audio_type=licensed", 1)
+				return entries
+			},
+			want: "Reel configure values",
+		},
+		{
+			name: "configure dimensions mismatch primary upload",
+			mutate: func(entries []map[string]any) []map[string]any {
+				postData := request(entries[5])["postData"].(map[string]any)
+				postData["text"] = strings.Replace(postData["text"].(string), "upload_media_height=1920", "upload_media_height=1919", 1)
+				return entries
+			},
+			want: "configure dimensions do not match",
+		},
 		{
 			name: "missing status",
 			mutate: func(entries []map[string]any) []map[string]any {
@@ -94,7 +141,7 @@ func TestPublishingInventoryRejectsIncompleteOrUncorrelatedContracts(t *testing.
 		{
 			name: "configure upload mismatch",
 			mutate: func(entries []map[string]any) []map[string]any {
-				request(entries[5])["postData"] = formPostData("upload_id=other&client_context=client-secret&source_type=4&upload_media_width=1080&upload_media_height=1920&caption=caption-secret")
+				request(entries[5])["postData"] = formPostData("upload_id=other&client_context=client-secret&device_id=android-42&source_type=4&upload_media_width=1080&upload_media_height=1920&caption=caption-secret&clips_share_preview_to_feed=1&clips_audio_type=original&poster_frame_index=0")
 				return entries
 			},
 			want: "configure upload_id",
@@ -136,6 +183,25 @@ func TestPublishingInventoryRejectsIncompleteOrUncorrelatedContracts(t *testing.
 	}
 }
 
+func TestPublishingInventoryNeverParsesRawUploadBodyAsFormData(t *testing.T) {
+	t.Parallel()
+	entries := completeFlowEntries("photo")
+	request(entries[0])["postData"] = map[string]any{
+		"mimeType": "image/jpeg",
+		"text":     "binary-secret=must-not-become-a-field",
+	}
+	flow, err := inspectPublishingHAR("photo", writeHAR(t, entries))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(flow.Surfaces) == 0 || len(flow.Surfaces[0].RequestFields) != 0 {
+		t.Fatalf("raw body became form fields: %#v", flow.Surfaces[0].RequestFields)
+	}
+	if strings.Contains(renderReport(inventoryReport{CapturedAt: time.Now(), Flows: []flowCapture{flow}}), "binary-secret") {
+		t.Fatal("raw upload body leaked into rendered capture")
+	}
+}
+
 func TestPublishingInventoryRequiresPhotoStatusContract(t *testing.T) {
 	t.Parallel()
 	entries := completeFlowEntries("photo")
@@ -164,19 +230,21 @@ func completeFlowEntries(kind string) []map[string]any {
 		clientID = "client-secret"
 		mediaID  = "999_42"
 	)
-	rawHeaders := []map[string]string{
-		{"name": "Cookie", "value": "cookie-secret"},
-		{"name": "Offset", "value": "0"},
-		{"name": "X-Entity-Length", "value": "5"},
-		{"name": "X-Entity-Name", "value": uploadID},
-		{"name": "X-Entity-Type", "value": "video/mp4"},
-		{"name": "X-Instagram-Rupload-Params", "value": `{"upload_id":"` + uploadID + `"}`},
-		{"name": "X_FB_PHOTO_WATERFALL_ID", "value": clientID},
-	}
+	rawHeaders := append(mobileHeaders(),
+		map[string]string{"name": "Offset", "value": "0"},
+		map[string]string{"name": "X-Entity-Length", "value": "5"},
+		map[string]string{"name": "X-Entity-Name", "value": uploadID},
+		map[string]string{"name": "X-Entity-Type", "value": "video/mp4"},
+		map[string]string{"name": "X-Instagram-Rupload-Params", "value": `{"upload_id":"` + uploadID + `","media_type":"2","xsharing_user_ids":"[]","upload_media_width":"1080","upload_media_height":"1920","upload_media_duration_ms":"3000"}`},
+		map[string]string{"name": "X_FB_PHOTO_WATERFALL_ID", "value": clientID},
+	)
 	photoHeaders := cloneHeaders(rawHeaders)
 	for _, header := range photoHeaders {
 		if header["name"] == "X-Entity-Type" {
 			header["value"] = "image/jpeg"
+		}
+		if header["name"] == "X-Instagram-Rupload-Params" {
+			header["value"] = `{"upload_id":"` + uploadID + `","media_type":"1","xsharing_user_ids":"[]","upload_media_width":"1080","upload_media_height":"1350"}`
 		}
 	}
 	uploadResponse := `{"status":"ok","upload_id":"` + uploadID + `"}`
@@ -193,7 +261,7 @@ func completeFlowEntries(kind string) []map[string]any {
 			entry("POST", "/rupload_igphoto/"+uploadID, photoHeaders, nil, 200, uploadResponse),
 			statusReady,
 			entry("POST", "/api/v1/media/configure/", nil,
-				formPostData("upload_id="+uploadID+"&client_context="+clientID+"&source_type=4&upload_media_width=1080&upload_media_height=1350&caption=caption-secret"),
+				formPostData("upload_id="+uploadID+"&client_context="+clientID+"&device_id=android-42&source_type=4&upload_media_width=1080&upload_media_height=1350&caption=caption-secret"),
 				200, `{"status":"ok","media":{"pk":"`+mediaID+`"}}`),
 			deleteEntry,
 			confirmEntry,
@@ -202,7 +270,10 @@ func completeFlowEntries(kind string) []map[string]any {
 
 	configurePath := "/api/v1/media/configure_to_clips/"
 	configureFields := "upload_id=" + uploadID + "&client_context=" + clientID +
-		"&source_type=4&upload_media_width=1080&upload_media_height=1920&caption=caption-secret"
+		"&device_id=android-42&source_type=4&upload_media_width=1080&upload_media_height=1920&caption=caption-secret"
+	if kind == "reel" {
+		configureFields += "&clips_share_preview_to_feed=1&clips_audio_type=original&poster_frame_index=0"
+	}
 	if kind == "story" {
 		configurePath = "/api/v1/media/configure_to_story/"
 		configureFields += "&configure_mode=1&story_media_creation_date=1"
@@ -217,7 +288,8 @@ func completeFlowEntries(kind string) []map[string]any {
 		entry("POST", "/rupload_igvideo/"+uploadID, rawHeaders, nil, 200, uploadResponse),
 		entry("POST", "/rupload_igphoto/"+uploadID+"_0", thumbHeaders, nil, 200, uploadResponse),
 		entry("POST", "/api/v1/media/upload_finish/", nil,
-			formPostData("upload_id="+uploadID+"&source_type=4&video=1&media_type="+kind),
+			formPostData("upload_id="+uploadID+"&source_type=4&video=1&media_type="+
+				map[string]string{"reel": "clips", "story": "story"}[kind]),
 			200, `{"status":"ok"}`),
 		entry("GET", "/api/v1/media/upload_status/?upload_id="+uploadID, nil, nil,
 			200, `{"status":"ok","processing_info":{"state":"processing"}}`),
@@ -237,9 +309,28 @@ func cloneHeaders(headers []map[string]string) []map[string]string {
 	return out
 }
 
+func setHeader(entry map[string]any, name, value string) {
+	for _, header := range request(entry)["headers"].([]map[string]string) {
+		if strings.EqualFold(header["name"], name) {
+			header["value"] = value
+			return
+		}
+	}
+}
+
+func headersWithout(headers []map[string]string, name string) []map[string]string {
+	out := make([]map[string]string, 0, len(headers))
+	for _, header := range headers {
+		if !strings.EqualFold(header["name"], name) {
+			out = append(out, header)
+		}
+	}
+	return out
+}
+
 func entry(method, path string, headers []map[string]string, postData map[string]any, status int, body string) map[string]any {
 	if headers == nil {
-		headers = []map[string]string{{"name": "Cookie", "value": "cookie-secret"}}
+		headers = mobileHeaders()
 	}
 	if postData == nil {
 		postData = map[string]any{}
@@ -253,6 +344,17 @@ func entry(method, path string, headers []map[string]string, postData map[string
 			"status":  status,
 			"content": map[string]any{"text": body},
 		},
+	}
+}
+
+func mobileHeaders() []map[string]string {
+	return []map[string]string{
+		{"name": "Cookie", "value": "cookie-secret"},
+		{"name": "User-Agent", "value": "Instagram captured-mobile-ua"},
+		{"name": "X-CSRFToken", "value": "csrf-secret"},
+		{"name": "X-IG-App-ID", "value": "567067343352427"},
+		{"name": "X-IG-Capabilities", "value": "3brTv10="},
+		{"name": "X-IG-Connection-Type", "value": "WIFI"},
 	}
 }
 
