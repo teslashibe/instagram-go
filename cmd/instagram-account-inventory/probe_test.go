@@ -63,6 +63,8 @@ func TestProbeFailsClosedOnMismatchChallengeAndMissingShape(t *testing.T) {
 		{name: "mismatch", body: strings.Replace(accountInventoryFixture(t), accountFixtureIDForProbe, "999", 1)},
 		{name: "challenge", body: `{"message":"challenge_required","status":"fail"}`},
 		{name: "missing field", body: strings.Replace(accountInventoryFixture(t), `"biography": "reversible smoke-test profile",`, "", 1)},
+		{name: "null field", body: strings.Replace(accountInventoryFixture(t), `"is_private": true`, `"is_private": null`, 1)},
+		{name: "wrong field type", body: strings.Replace(accountInventoryFixture(t), `"account_type": 2`, `"account_type": false`, 1)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

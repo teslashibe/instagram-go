@@ -15,7 +15,7 @@ go run ./cmd/instagram-account-inventory \
 
 The command fails before writing if authentication is rejected, Instagram asks
 for a challenge, the response account ID differs from `ds_user_id`, or any
-required allowlisted field is missing. It refuses to overwrite an existing
+required allowlisted field is missing, null, or has the wrong JSON type. It refuses to overwrite an existing
 capture. Reports contain paths and parameter names only—not raw values, bodies,
 cookies, CSRF tokens, contact details, or security state.
 

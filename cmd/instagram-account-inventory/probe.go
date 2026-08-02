@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -173,11 +174,39 @@ func responseAccountID(user map[string]json.RawMessage) (string, string) {
 func missingFields(user map[string]json.RawMessage, required []string) []string {
 	var missing []string
 	for _, field := range required {
-		if _, ok := user[field]; !ok {
+		raw, ok := user[field]
+		if !ok || len(raw) == 0 || string(raw) == "null" || !validInventoryField(field, raw) {
 			missing = append(missing, field)
 		}
 	}
 	return missing
+}
+
+func validInventoryField(field string, raw json.RawMessage) bool {
+	switch field {
+	case "username", "full_name", "biography", "external_url", "category_name":
+		var value string
+		return json.Unmarshal(raw, &value) == nil
+	case "is_private", "is_professional_account", "is_business", "should_show_category":
+		var value bool
+		return json.Unmarshal(raw, &value) == nil
+	case "pk", "category_id", "account_type":
+		if raw[0] == '"' {
+			var value string
+			if json.Unmarshal(raw, &value) != nil {
+				return false
+			}
+			if field == "category_id" {
+				return true
+			}
+			_, err := strconv.ParseInt(value, 10, 64)
+			return err == nil
+		}
+		_, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+		return err == nil
+	default:
+		return false
+	}
 }
 
 func loadCookieSet(getenv func(string) string) (cookieSet, error) {

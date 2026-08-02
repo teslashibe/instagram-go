@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -46,6 +47,37 @@ func readAccountFixture(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func mutateAccountFixtureField(t *testing.T, fixture, field string, value any, remove bool) string {
+	t.Helper()
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(fixture), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var user map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["user"], &user); err != nil {
+		t.Fatal(err)
+	}
+	if remove {
+		delete(user, field)
+	} else {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		user[field] = raw
+	}
+	rawUser, err := json.Marshal(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope["user"] = rawUser
+	rawEnvelope, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(rawEnvelope)
 }
 
 func TestAccountReadContracts(t *testing.T) {
@@ -107,6 +139,57 @@ func TestAccountReadRejectsMismatchAndChallenge(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+}
+
+func TestAccountReadRejectsMissingNullAndInvalidContractFields(t *testing.T) {
+	fixture := readAccountFixture(t, "account_current_user_response.json")
+	fields := []string{
+		"username", "full_name", "biography", "external_url", "is_private",
+		"is_professional_account", "is_business", "account_type", "category_id",
+		"category_name", "should_show_category",
+	}
+	for _, field := range fields {
+		field := field
+		t.Run(field+" missing", func(t *testing.T) {
+			body := mutateAccountFixtureField(t, fixture, field, nil, true)
+			c := newAccountTestClient(t, func(req *http.Request) (*http.Response, error) {
+				return accountResponse(req, http.StatusOK, body), nil
+			})
+			if _, err := c.GetCurrentAccount(context.Background()); !errors.Is(err, ErrUnexpectedResponse) {
+				t.Fatalf("error = %v, want ErrUnexpectedResponse", err)
+			}
+		})
+		t.Run(field+" null", func(t *testing.T) {
+			body := mutateAccountFixtureField(t, fixture, field, nil, false)
+			c := newAccountTestClient(t, func(req *http.Request) (*http.Response, error) {
+				return accountResponse(req, http.StatusOK, body), nil
+			})
+			if _, err := c.GetCurrentAccount(context.Background()); !errors.Is(err, ErrUnexpectedResponse) {
+				t.Fatalf("error = %v, want ErrUnexpectedResponse", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		field string
+		value any
+	}{
+		{field: "biography", value: false},
+		{field: "is_private", value: "false"},
+		{field: "account_type", value: 2.5},
+		{field: "category_id", value: map[string]any{"id": "1001"}},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.field+" wrong type", func(t *testing.T) {
+			body := mutateAccountFixtureField(t, fixture, tt.field, tt.value, false)
+			c := newAccountTestClient(t, func(req *http.Request) (*http.Response, error) {
+				return accountResponse(req, http.StatusOK, body), nil
+			})
+			if _, err := c.GetCurrentAccount(context.Background()); !errors.Is(err, ErrUnexpectedResponse) {
+				t.Fatalf("error = %v, want ErrUnexpectedResponse", err)
+			}
+		})
+	}
 }
 
 func TestAccountMutationsRejectLocallyWithoutHTTP(t *testing.T) {
@@ -308,4 +391,81 @@ func TestScopedPrivacyAndProfessionalWritesVerifyAllowlistedState(t *testing.T) 
 			t.Fatalf("result=%#v err=%v requests=%d", result, err, request)
 		}
 	})
+}
+
+func TestAccountMutationsSerializeCompleteTransactions(t *testing.T) {
+	fixture := readAccountFixture(t, "account_settings_response.json")
+	writeStarted := make(chan struct{})
+	releaseWrite := make(chan struct{})
+	requestDuringWrite := make(chan struct{}, 1)
+	var mu sync.Mutex
+	requestCount := 0
+	private := true
+	c := newAccountTestClient(t, func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		requestCount++
+		requestNumber := requestCount
+		currentPrivate := private
+		if req.Method == http.MethodPost {
+			private = false
+		}
+		mu.Unlock()
+
+		if requestNumber > 2 {
+			select {
+			case requestDuringWrite <- struct{}{}:
+			default:
+			}
+		}
+		if req.Method == http.MethodPost {
+			close(writeStarted)
+			<-releaseWrite
+			return accountResponse(req, http.StatusOK, `{"status":"ok"}`), nil
+		}
+		body := fixture
+		if !currentPrivate {
+			body = strings.Replace(body, `"is_private": true`, `"is_private": false`, 1)
+		}
+		return accountResponse(req, http.StatusOK, body), nil
+	})
+
+	params := SetPrivacyParams{
+		ExpectedAccountID: accountFixtureID, Before: true, After: false, Confirm: true,
+	}
+	results := make(chan error, 2)
+	go func() {
+		_, err := c.SetPrivacy(context.Background(), params)
+		results <- err
+	}()
+	<-writeStarted
+	go func() {
+		_, err := c.SetPrivacy(context.Background(), params)
+		results <- err
+	}()
+
+	select {
+	case <-requestDuringWrite:
+		t.Fatal("a second account mutation entered the transport before the first transaction completed")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(releaseWrite)
+
+	var succeeded, stale int
+	for range 2 {
+		err := <-results
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrMutationPrecondition):
+			stale++
+		default:
+			t.Fatalf("unexpected mutation error: %v", err)
+		}
+	}
+	mu.Lock()
+	requests := requestCount
+	mu.Unlock()
+	if succeeded != 1 || stale != 1 || requests != 4 {
+		t.Fatalf("succeeded=%d stale=%d requests=%d, want 1/1/4", succeeded, stale, requests)
+	}
 }

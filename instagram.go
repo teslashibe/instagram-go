@@ -116,6 +116,10 @@ type Client struct {
 	lastReqAt   time.Time
 	writeMu     sync.Mutex
 	lastWriteAt time.Time
+	// accountMutationMu serializes the complete pre-read/write/post-read
+	// transaction for account-administration mutations. The write pacer alone
+	// only serializes individual requests and cannot protect stale Before values.
+	accountMutationMu sync.Mutex
 
 	rateMu       sync.Mutex
 	rateState    RateLimitState

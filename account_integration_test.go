@@ -59,6 +59,7 @@ func TestIntegration_AccountAdmin_ProfileRestoresBurner(t *testing.T) {
 		t.Fatalf("restore profile: %v", err)
 	}
 	assertProfileRestored(t, c, id, original.Profile)
+	t.Log("PASS: burner profile mutation verified and original profile restored")
 }
 
 func TestIntegration_AccountAdmin_PrivacyRestoresBurner(t *testing.T) {
@@ -83,6 +84,7 @@ func TestIntegration_AccountAdmin_PrivacyRestoresBurner(t *testing.T) {
 		t.Fatalf("restore privacy: %v", err)
 	}
 	assertPrivacyRestored(t, c, id, original.IsPrivate)
+	t.Log("PASS: burner privacy mutation verified and original privacy restored")
 }
 
 func TestIntegration_AccountAdmin_ProfessionalDisplayRestoresBurner(t *testing.T) {
@@ -111,6 +113,7 @@ func TestIntegration_AccountAdmin_ProfessionalDisplayRestoresBurner(t *testing.T
 		t.Fatalf("restore professional settings: %v", err)
 	}
 	assertProfessionalRestored(t, c, id, original.Settings)
+	t.Log("PASS: burner professional-display mutation verified and original settings restored")
 }
 
 func cleanupContext() (context.Context, context.CancelFunc) {
@@ -130,7 +133,12 @@ func restoreProfileCleanup(t *testing.T, c *instagram.Client, id string, origina
 		if current.Profile != original {
 			if _, err := c.UpdateProfileFields(ctx, instagram.UpdateProfileFieldsParams{ExpectedAccountID: id, Before: current.Profile, After: original, Confirm: true}); err != nil {
 				t.Errorf("cleanup restore profile: %v", err)
+				return
 			}
+		}
+		current, err = c.GetAccountSettings(ctx)
+		if err != nil || current.AccountID != id || current.Profile != original {
+			t.Errorf("cleanup verify profile restoration: got=%#v err=%v", current, err)
 		}
 	})
 }
@@ -148,7 +156,12 @@ func restorePrivacyCleanup(t *testing.T, c *instagram.Client, id string, origina
 		if current.IsPrivate != original {
 			if _, err := c.SetPrivacy(ctx, instagram.SetPrivacyParams{ExpectedAccountID: id, Before: current.IsPrivate, After: original, Confirm: true}); err != nil {
 				t.Errorf("cleanup restore privacy: %v", err)
+				return
 			}
+		}
+		current, err = c.GetAccountSettings(ctx)
+		if err != nil || current.AccountID != id || current.IsPrivate != original {
+			t.Errorf("cleanup verify privacy restoration: got=%#v err=%v", current, err)
 		}
 	})
 }
@@ -166,7 +179,12 @@ func restoreProfessionalCleanup(t *testing.T, c *instagram.Client, id string, or
 		if current.Settings != original {
 			if _, err := c.UpdateProfessionalSettings(ctx, instagram.UpdateProfessionalSettingsParams{ExpectedAccountID: id, Before: current.Settings, After: original, Confirm: true}); err != nil {
 				t.Errorf("cleanup restore professional settings: %v", err)
+				return
 			}
+		}
+		current, err = c.GetProfessionalAccountState(ctx)
+		if err != nil || current.AccountID != id || current.Settings != original {
+			t.Errorf("cleanup verify professional-settings restoration: got=%#v err=%v", current, err)
 		}
 	})
 }

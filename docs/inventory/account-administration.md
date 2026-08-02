@@ -79,3 +79,9 @@ go test -v -count=1 -run '^TestIntegration_AccountAdmin_ProfileRestoresBurner$' 
 go test -v -count=1 -run '^TestIntegration_AccountAdmin_PrivacyRestoresBurner$' .
 go test -v -count=1 -run '^TestIntegration_AccountAdmin_ProfessionalDisplayRestoresBurner$' .
 ```
+
+A successful live run prints one sanitized `PASS: burner ... restored` marker
+per applicable test. Do not create a validation record from skipped tests or
+from offline fixtures. A committed record must include the UTC run time, the
+three exact test commands, their PASS/skip outcome (professional display may be
+inapplicable to a non-professional burner), and no account values or credentials.

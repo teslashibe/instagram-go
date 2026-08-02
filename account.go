@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 const currentAccountPath = "/api/v1/accounts/current_user/"
@@ -79,39 +80,134 @@ func (c *Client) readAccountContract(ctx context.Context) (accountContract, erro
 	if len(envelope.User) == 0 || string(envelope.User) == "null" {
 		return accountContract{}, fmt.Errorf("%w: current account response missing user", ErrUnexpectedResponse)
 	}
-	var raw struct {
-		PK                    json.RawMessage `json:"pk"`
-		PKID                  json.RawMessage `json:"pk_id"`
-		ID                    json.RawMessage `json:"id"`
-		Username              string          `json:"username"`
-		FullName              string          `json:"full_name"`
-		Biography             string          `json:"biography"`
-		ExternalURL           string          `json:"external_url"`
-		IsPrivate             bool            `json:"is_private"`
-		IsProfessionalAccount bool            `json:"is_professional_account"`
-		IsBusiness            bool            `json:"is_business"`
-		AccountType           any             `json:"account_type"`
-		CategoryID            json.RawMessage `json:"category_id"`
-		CategoryName          string          `json:"category_name"`
-		ShouldShowCategory    bool            `json:"should_show_category"`
-	}
-	if err := json.Unmarshal(envelope.User, &raw); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.User, &fields); err != nil {
 		return accountContract{}, fmt.Errorf("%w: parse current account: %v", ErrUnexpectedResponse, err)
 	}
-	id := stringifyID(raw.PKID, raw.PK, raw.ID)
+	id := stringifyID(fields["pk_id"], fields["pk"], fields["id"])
 	if id == "" {
 		return accountContract{}, fmt.Errorf("%w: current account response missing id", ErrUnexpectedResponse)
 	}
 	if err := c.requireAccountID(c.cookies.DSUserID, id); err != nil {
 		return accountContract{}, err
 	}
+	username, err := requiredAccountString(fields, "username")
+	if err != nil {
+		return accountContract{}, err
+	}
+	fullName, err := requiredAccountString(fields, "full_name")
+	if err != nil {
+		return accountContract{}, err
+	}
+	biography, err := requiredAccountString(fields, "biography")
+	if err != nil {
+		return accountContract{}, err
+	}
+	externalURL, err := requiredAccountString(fields, "external_url")
+	if err != nil {
+		return accountContract{}, err
+	}
+	isPrivate, err := requiredAccountBool(fields, "is_private")
+	if err != nil {
+		return accountContract{}, err
+	}
+	isProfessional, err := requiredAccountBool(fields, "is_professional_account")
+	if err != nil {
+		return accountContract{}, err
+	}
+	isBusiness, err := requiredAccountBool(fields, "is_business")
+	if err != nil {
+		return accountContract{}, err
+	}
+	accountType, err := requiredAccountInt(fields, "account_type")
+	if err != nil {
+		return accountContract{}, err
+	}
+	categoryID, err := requiredAccountScalarString(fields, "category_id")
+	if err != nil {
+		return accountContract{}, err
+	}
+	categoryName, err := requiredAccountString(fields, "category_name")
+	if err != nil {
+		return accountContract{}, err
+	}
+	displayCategory, err := requiredAccountBool(fields, "should_show_category")
+	if err != nil {
+		return accountContract{}, err
+	}
 	return accountContract{
-		ID: id, Username: raw.Username, FullName: raw.FullName, Biography: raw.Biography,
-		ExternalURL: raw.ExternalURL, IsPrivate: raw.IsPrivate,
-		IsProfessional: raw.IsProfessionalAccount, IsBusiness: raw.IsBusiness,
-		AccountType: anyToInt(raw.AccountType), CategoryID: stringifyID(raw.CategoryID),
-		CategoryName: raw.CategoryName, DisplayCategory: raw.ShouldShowCategory,
+		ID: id, Username: username, FullName: fullName, Biography: biography,
+		ExternalURL: externalURL, IsPrivate: isPrivate,
+		IsProfessional: isProfessional, IsBusiness: isBusiness,
+		AccountType: accountType, CategoryID: categoryID,
+		CategoryName: categoryName, DisplayCategory: displayCategory,
 	}, nil
+}
+
+func requiredAccountRaw(fields map[string]json.RawMessage, name string) (json.RawMessage, error) {
+	raw, ok := fields[name]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return nil, fmt.Errorf("%w: current account field %q is missing or null", ErrUnexpectedResponse, name)
+	}
+	return raw, nil
+}
+
+func requiredAccountString(fields map[string]json.RawMessage, name string) (string, error) {
+	raw, err := requiredAccountRaw(fields, name)
+	if err != nil {
+		return "", err
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("%w: current account field %q must be a string", ErrUnexpectedResponse, name)
+	}
+	return value, nil
+}
+
+func requiredAccountBool(fields map[string]json.RawMessage, name string) (bool, error) {
+	raw, err := requiredAccountRaw(fields, name)
+	if err != nil {
+		return false, err
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, fmt.Errorf("%w: current account field %q must be a boolean", ErrUnexpectedResponse, name)
+	}
+	return value, nil
+}
+
+func requiredAccountInt(fields map[string]json.RawMessage, name string) (int, error) {
+	value, err := requiredAccountScalarString(fields, name)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%w: current account field %q must be an integer", ErrUnexpectedResponse, name)
+	}
+	return n, nil
+}
+
+// requiredAccountScalarString accepts the two shapes Instagram uses for
+// identifier-like fields: a JSON string or an integer JSON number. It rejects
+// floats, booleans, objects, arrays, missing fields, and null.
+func requiredAccountScalarString(fields map[string]json.RawMessage, name string) (string, error) {
+	raw, err := requiredAccountRaw(fields, name)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) > 0 && raw[0] == '"' {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return "", fmt.Errorf("%w: current account field %q must be a string or integer", ErrUnexpectedResponse, name)
+		}
+		return value, nil
+	}
+	value := strings.TrimSpace(string(raw))
+	if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+		return "", fmt.Errorf("%w: current account field %q must be a string or integer", ErrUnexpectedResponse, name)
+	}
+	return value, nil
 }
 
 // UpdateProfileFields changes only full name, biography, and external URL.
@@ -122,6 +218,8 @@ func (c *Client) UpdateProfileFields(ctx context.Context, p UpdateProfileFieldsP
 	if p.Before == p.After {
 		return nil, precondition("profile", "before and after values are identical")
 	}
+	c.accountMutationMu.Lock()
+	defer c.accountMutationMu.Unlock()
 	current, err := c.GetAccountSettings(ctx)
 	if err != nil {
 		return nil, err
@@ -161,6 +259,8 @@ func (c *Client) SetPrivacy(ctx context.Context, p SetPrivacyParams) (*AccountMu
 	if p.Before == p.After {
 		return nil, precondition("privacy", "before and after values are identical")
 	}
+	c.accountMutationMu.Lock()
+	defer c.accountMutationMu.Unlock()
 	current, err := c.GetAccountSettings(ctx)
 	if err != nil {
 		return nil, err
@@ -200,6 +300,8 @@ func (c *Client) UpdateProfessionalSettings(ctx context.Context, p UpdateProfess
 	if p.Before == p.After {
 		return nil, precondition("professional_settings", "before and after values are identical")
 	}
+	c.accountMutationMu.Lock()
+	defer c.accountMutationMu.Unlock()
 	current, err := c.GetProfessionalAccountState(ctx)
 	if err != nil {
 		return nil, err
