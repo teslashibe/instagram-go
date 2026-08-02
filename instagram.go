@@ -1,9 +1,9 @@
 // Package instagram provides a Go client for Instagram's private web/mobile API.
 //
 // It supports authenticated profile lookup, post and reel feeds, comments,
-// followers/following, stories, hashtags, locations, and search — giving
-// programmatic access to Instagram's content graph from a logged-in browser
-// session.
+// followers/following, stories, hashtags, locations, search, and narrowly
+// scoped account administration — giving programmatic access to Instagram's
+// content graph and safe reversible settings from a logged-in browser session.
 //
 // Zero production dependencies — stdlib only.
 //
@@ -28,14 +28,16 @@
 // # Rate limiting
 //
 // Instagram does not return X-RateLimit headers. The client paces requests
-// with a leaky-bucket minimum gap (default 1.5s) and exponential backoff on
+// with a leaky-bucket minimum gap (default 4s) and exponential backoff on
 // HTTP 429 / "Please wait a few minutes" responses.
 //
 // Write actions (Follow, Unfollow, Like, Comment, etc.) are subject to a
 // stricter, separate rate limiter than reads. The client enforces a longer
-// minimum gap (default 6s) between writes and applies aggressive backoff on
+// minimum gap (default 12s) between writes and applies aggressive backoff on
 // any 302-to-login response, which Instagram uses to indicate a write soft
-// block.
+// block. Account-administration writes additionally require an expected account
+// ID, explicit before/after values, and confirmation; ambiguous writes are not
+// retried.
 package instagram
 
 import (
@@ -114,6 +116,10 @@ type Client struct {
 	lastReqAt   time.Time
 	writeMu     sync.Mutex
 	lastWriteAt time.Time
+	// accountMutationMu serializes the complete pre-read/write/post-read
+	// transaction for account-administration mutations. The write pacer alone
+	// only serializes individual requests and cannot protect stale Before values.
+	accountMutationMu sync.Mutex
 
 	rateMu       sync.Mutex
 	rateState    RateLimitState
@@ -271,13 +277,13 @@ func WithProxy(proxyURL string) Option {
 }
 
 // WithMinRequestGap sets the minimum time between consecutive read requests.
-// Default: 1.5s. Lower values risk triggering Instagram's behavioural limiter.
+// Default: 4s. Lower values risk triggering Instagram's behavioural limiter.
 func WithMinRequestGap(d time.Duration) Option {
 	return func(c *Client) { c.minGap = d }
 }
 
 // WithMinWriteGap sets the minimum time between consecutive write requests
-// (Follow, Like, Comment, Save, etc.). Default: 6s. Writes share a separate
+// (Follow, Like, Comment, Save, etc.). Default: 12s. Writes share a separate
 // rate-limit budget from reads on Instagram's backend.
 func WithMinWriteGap(d time.Duration) Option {
 	return func(c *Client) { c.writeGap = d }
@@ -290,7 +296,8 @@ func WithMinWriteGap(d time.Duration) Option {
 //
 // Pass 0 to use the defaults (5m read, 15m write). Pass any positive value
 // to override; pass a tiny value (e.g. 1ms) to effectively disable the
-// circuit-breaker (not recommended).
+// circuit-breaker (not recommended). Write cooldowns are capped at 30 minutes
+// so callers always retain a bounded recovery window.
 func WithRateLimitCooldown(read, write time.Duration) Option {
 	return func(c *Client) {
 		if read > 0 {

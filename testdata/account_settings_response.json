@@ -1,0 +1,17 @@
+{
+  "user": {
+    "pk": "1234567890123456789",
+    "username": "burner_account",
+    "full_name": "Burner Account",
+    "biography": "reversible smoke-test profile",
+    "external_url": "https://example.invalid/burner",
+    "is_private": true,
+    "is_professional_account": true,
+    "is_business": false,
+    "account_type": 2,
+    "category_id": "1001",
+    "category_name": "Digital creator",
+    "should_show_category": true
+  },
+  "status": "ok"
+}

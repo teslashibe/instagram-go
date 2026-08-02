@@ -39,6 +39,7 @@ func (Provider) Platform() string { return "instagram" }
 func (Provider) Tools() []mcptool.Tool {
 	out := make([]mcptool.Tool, 0,
 		len(userTools)+
+			len(accountTools)+
 			len(postTools)+
 			len(commentTools)+
 			len(followerTools)+
@@ -49,6 +50,7 @@ func (Provider) Tools() []mcptool.Tool {
 			len(observabilityTools),
 	)
 	out = append(out, userTools...)
+	out = append(out, accountTools...)
 	out = append(out, postTools...)
 	out = append(out, commentTools...)
 	out = append(out, followerTools...)
