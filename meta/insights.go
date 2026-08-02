@@ -48,6 +48,19 @@ const (
 	MediaMetricTotalInteractions MediaMetric = "total_interactions"
 )
 
+// MediaType identifies the Instagram media surface whose insight metrics are
+// being requested. Graph exposes different metrics for feed media, reels, and
+// stories, so callers must provide this context for pre-request validation.
+type MediaType string
+
+const (
+	MediaTypeImage         MediaType = "image"
+	MediaTypeCarouselAlbum MediaType = "carousel_album"
+	MediaTypeVideo         MediaType = "video"
+	MediaTypeReel          MediaType = "reel"
+	MediaTypeStory         MediaType = "story"
+)
+
 type AccountInsightsRequest struct {
 	AccountID string          `json:"account_id,omitempty"`
 	Metrics   []AccountMetric `json:"metrics"`
@@ -58,6 +71,7 @@ type AccountInsightsRequest struct {
 
 type MediaInsightsRequest struct {
 	MediaID   string        `json:"media_id"`
+	MediaType MediaType     `json:"media_type"`
 	Metrics   []MediaMetric `json:"metrics"`
 	Period    Period        `json:"period"`
 	Timeframe Timeframe     `json:"timeframe,omitempty"`
@@ -126,17 +140,20 @@ func (c *Client) GetMediaInsights(ctx context.Context, request MediaInsightsRequ
 }
 
 func validateAccountInsights(request AccountInsightsRequest) error {
-	if request.Period != PeriodDay && request.Period != PeriodWeek && request.Period != PeriodDays28 {
-		return fmt.Errorf("%w: account insight period must be day, week, or days_28", ErrInvalidInput)
-	}
 	if err := validateTimeframe(request.Timeframe, 93*24*time.Hour, true); err != nil {
 		return err
 	}
-	allowed := map[AccountMetric]bool{
-		AccountMetricReach: true, AccountMetricProfileViews: true, AccountMetricWebsiteClicks: true,
-		AccountMetricAccountsEngaged: true, AccountMetricTotalInteractions: true, AccountMetricFollowsAndUnfollows: true,
+	compatibility := map[AccountMetric]map[Period]bool{
+		AccountMetricReach: {
+			PeriodDay: true, PeriodWeek: true, PeriodDays28: true,
+		},
+		AccountMetricProfileViews:        {PeriodDay: true},
+		AccountMetricWebsiteClicks:       {PeriodDay: true},
+		AccountMetricAccountsEngaged:     {PeriodDay: true},
+		AccountMetricTotalInteractions:   {PeriodDay: true},
+		AccountMetricFollowsAndUnfollows: {PeriodDay: true},
 	}
-	if err := validateMetrics(request.Metrics, allowed); err != nil {
+	if err := validateMetricPeriodCombinations(request.Metrics, request.Period, compatibility); err != nil {
 		return err
 	}
 	return validateListOptions(request.ListOptions)
@@ -146,17 +163,40 @@ func validateMediaInsights(request MediaInsightsRequest) error {
 	if strings.TrimSpace(request.MediaID) == "" {
 		return fmt.Errorf("%w: media_id is required", ErrInvalidInput)
 	}
+	switch request.MediaType {
+	case MediaTypeImage, MediaTypeCarouselAlbum, MediaTypeVideo, MediaTypeReel, MediaTypeStory:
+	default:
+		return fmt.Errorf("%w: media_type must be image, carousel_album, video, reel, or story", ErrInvalidInput)
+	}
 	if request.Period != PeriodLifetime {
 		return fmt.Errorf("%w: media insight period must be lifetime", ErrInvalidInput)
 	}
 	if !request.Timeframe.Since.IsZero() || !request.Timeframe.Until.IsZero() {
 		return fmt.Errorf("%w: media lifetime insights do not accept a timeframe", ErrInvalidInput)
 	}
-	allowed := map[MediaMetric]bool{
-		MediaMetricReach: true, MediaMetricLikes: true, MediaMetricComments: true, MediaMetricSaved: true,
-		MediaMetricShares: true, MediaMetricPlays: true, MediaMetricTotalInteractions: true,
+	compatibility := map[MediaMetric]map[MediaType]bool{
+		MediaMetricReach: {
+			MediaTypeImage: true, MediaTypeCarouselAlbum: true, MediaTypeVideo: true,
+			MediaTypeReel: true, MediaTypeStory: true,
+		},
+		MediaMetricLikes: {
+			MediaTypeImage: true, MediaTypeCarouselAlbum: true, MediaTypeVideo: true, MediaTypeReel: true,
+		},
+		MediaMetricComments: {
+			MediaTypeImage: true, MediaTypeCarouselAlbum: true, MediaTypeVideo: true, MediaTypeReel: true,
+		},
+		MediaMetricSaved: {
+			MediaTypeImage: true, MediaTypeCarouselAlbum: true, MediaTypeVideo: true, MediaTypeReel: true,
+		},
+		MediaMetricShares: {
+			MediaTypeImage: true, MediaTypeCarouselAlbum: true, MediaTypeVideo: true, MediaTypeReel: true,
+		},
+		MediaMetricPlays: {MediaTypeVideo: true, MediaTypeReel: true},
+		MediaMetricTotalInteractions: {
+			MediaTypeImage: true, MediaTypeCarouselAlbum: true, MediaTypeVideo: true, MediaTypeReel: true,
+		},
 	}
-	if err := validateMetrics(request.Metrics, allowed); err != nil {
+	if err := validateMetricResourceCombinations(request.Metrics, request.MediaType, compatibility); err != nil {
 		return err
 	}
 	return validateListOptions(request.ListOptions)
@@ -191,6 +231,38 @@ func validateMetrics[T ~string](metrics []T, allowed map[T]bool) error {
 			return fmt.Errorf("%w: duplicate metric %q", ErrInvalidInput, metric)
 		}
 		seen[metric] = true
+	}
+	return nil
+}
+
+func validateMetricPeriodCombinations[T ~string](metrics []T, period Period, compatibility map[T]map[Period]bool) error {
+	allowed := make(map[T]bool, len(compatibility))
+	for metric := range compatibility {
+		allowed[metric] = true
+	}
+	if err := validateMetrics(metrics, allowed); err != nil {
+		return err
+	}
+	for _, metric := range metrics {
+		if !compatibility[metric][period] {
+			return fmt.Errorf("%w: metric %q does not support period %q", ErrInvalidInput, metric, period)
+		}
+	}
+	return nil
+}
+
+func validateMetricResourceCombinations[T ~string, R ~string](metrics []T, resource R, compatibility map[T]map[R]bool) error {
+	allowed := make(map[T]bool, len(compatibility))
+	for metric := range compatibility {
+		allowed[metric] = true
+	}
+	if err := validateMetrics(metrics, allowed); err != nil {
+		return err
+	}
+	for _, metric := range metrics {
+		if !compatibility[metric][resource] {
+			return fmt.Errorf("%w: metric %q is not supported for %q", ErrInvalidInput, metric, resource)
+		}
 	}
 	return nil
 }

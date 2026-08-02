@@ -73,6 +73,13 @@ func TestToolsExposeTypedInputsAndStructuredErrors(t *testing.T) {
 			t.Errorf("schema lacks %s", field)
 		}
 	}
+	mediaProperties, ok := findTool(t, "instagram_meta_get_media_insights").InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("media properties schema is missing")
+	}
+	if _, exists := mediaProperties["media_type"]; !exists {
+		t.Fatal("media insight schema lacks media_type compatibility context")
+	}
 
 	expired := newClient(t, meta.DefaultReadScopes, time.Unix(999, 0), func(*http.Request) (*http.Response, error) {
 		t.Fatal("expired token reached HTTP")

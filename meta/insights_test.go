@@ -38,13 +38,32 @@ func TestAccountInsightsValidationAndRequest(t *testing.T) {
 	}
 }
 
+func TestAccountInsightsRejectsMetricPeriodMismatchBeforeTransport(t *testing.T) {
+	requests := 0
+	c := testClient(t, allReadScopes(), false, func(req *http.Request) (*http.Response, error) {
+		requests++
+		return jsonResponse(req, http.StatusOK, `{"data":[]}`), nil
+	})
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	request := AccountInsightsRequest{
+		AccountID: "ig-1", Metrics: []AccountMetric{AccountMetricProfileViews}, Period: PeriodWeek,
+		Timeframe: Timeframe{Since: start, Until: start.AddDate(0, 0, 7)},
+	}
+	if _, err := c.GetAccountInsights(context.Background(), request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("compatibility error=%v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("incompatible metric reached HTTP: %d", requests)
+	}
+}
+
 func TestMediaInsightsPeriodAndTimeframeValidation(t *testing.T) {
 	requests := 0
 	c := testClient(t, allReadScopes(), false, func(req *http.Request) (*http.Response, error) {
 		requests++
 		return jsonResponse(req, http.StatusOK, `{"data":[]}`), nil
 	})
-	valid := MediaInsightsRequest{MediaID: "media-1", Metrics: []MediaMetric{MediaMetricReach}, Period: PeriodLifetime}
+	valid := MediaInsightsRequest{MediaID: "media-1", MediaType: MediaTypeImage, Metrics: []MediaMetric{MediaMetricReach}, Period: PeriodLifetime}
 	if _, err := c.GetMediaInsights(context.Background(), valid); err != nil {
 		t.Fatal(err)
 	}
@@ -59,5 +78,28 @@ func TestMediaInsightsPeriodAndTimeframeValidation(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("requests=%d", requests)
+	}
+}
+
+func TestMediaInsightsRejectsMediaMetricMismatchBeforeTransport(t *testing.T) {
+	requests := 0
+	c := testClient(t, allReadScopes(), false, func(req *http.Request) (*http.Response, error) {
+		requests++
+		return jsonResponse(req, http.StatusOK, `{"data":[]}`), nil
+	})
+	request := MediaInsightsRequest{
+		MediaID: "media-1", MediaType: MediaTypeImage,
+		Metrics: []MediaMetric{MediaMetricPlays}, Period: PeriodLifetime,
+	}
+	if _, err := c.GetMediaInsights(context.Background(), request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("compatibility error=%v", err)
+	}
+	request.MediaType = "unknown"
+	request.Metrics = []MediaMetric{MediaMetricReach}
+	if _, err := c.GetMediaInsights(context.Background(), request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("media type error=%v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("incompatible media insight reached HTTP: %d", requests)
 	}
 }

@@ -99,8 +99,10 @@ from silently choosing an account.
 
 Account and media reads use typed metric and period constants. Account insight
 timeframes require `since < until` and are bounded to 93 days per request.
-Media insights require `lifetime` and reject unsupported timeframes. Unknown or
-duplicate metrics fail before an HTTP request.
+Metric/period combinations are validated explicitly. Media insights require a
+typed media surface (`image`, `carousel_album`, `video`, `reel`, or `story`),
+use `lifetime`, and reject metrics unavailable for that surface. Unknown,
+duplicate, or incompatible metrics fail before an HTTP request.
 
 ```go
 insights, err := client.GetAccountInsights(ctx, meta.AccountInsightsRequest{
@@ -141,10 +143,14 @@ Ad mutation methods are disabled unless all of these conditions hold:
    date are supplied.
 4. `AdMutationConfirmation` exactly repeats the account, budget, currency, and
    dates, sets `Approved`, and uses `meta.AdMutationConfirmationPhrase`.
-5. The confirmed currency matches the ad account currency returned by Graph.
+5. The target ad, its ad set, and any campaign-level budget/schedule resolve to
+   the confirmed ad account.
+6. The confirmed budget, currency, and dates exactly match the effective
+   budget/schedule and account currency returned by Graph.
 
-Missing or mismatched confirmations fail before any Graph request. Account
-currency is read and verified before a write. Mutations are deliberately
+Malformed or self-inconsistent confirmations fail before any Graph request.
+Ownership and effective spend/schedule mismatches fail after read verification
+but before the write. Mutations are deliberately
 excluded from the initial `meta/mcp` provider; the SDK guard exists so a future
 write surface cannot bypass the policy.
 
