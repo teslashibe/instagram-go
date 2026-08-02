@@ -4,6 +4,10 @@ Status: **typed read and guarded reversible-write contract implemented**.
 
 The durable, secret-scrubbed shape capture is
 [`captures/2026-08-01-account-administration.md`](./captures/2026-08-01-account-administration.md).
+The separate, sanitized mutation evidence is
+[`../account-administration-live-validation.md`](../account-administration-live-validation.md);
+it records profile and privacy restoration PASS results and the professional
+display applicability outcome without retaining burner values.
 Use [`cmd/instagram-account-inventory`](../../cmd/instagram-account-inventory/)
 to refresh it against a dedicated burner after private API drift. A capture is
 complete only when authentication succeeds, the returned account ID matches
@@ -85,3 +89,5 @@ per applicable test. Do not create a validation record from skipped tests or
 from offline fixtures. A committed record must include the UTC run time, the
 three exact test commands, their PASS/skip outcome (professional display may be
 inapplicable to a non-professional burner), and no account values or credentials.
+The latest compliant record is
+[`docs/account-administration-live-validation.md`](../account-administration-live-validation.md).

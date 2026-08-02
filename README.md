@@ -551,7 +551,10 @@ go test -v -count=1 -run '^TestIntegration_AccountAdmin_ProfileRestoresBurner$' 
 ```
 
 Run one administration smoke test at a time. Privacy and professional-display
-test names are listed in the account-administration inventory document.
+test names are listed in the account-administration inventory document. The
+latest sanitized live outcomes, including verified profile/privacy restoration
+and the professional-display applicability result, are committed in
+[`docs/account-administration-live-validation.md`](docs/account-administration-live-validation.md).
 
 ## MCP support
 
