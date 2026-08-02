@@ -1,6 +1,7 @@
 # instagram-go
 
-A Go client for Instagram's private web/mobile API (`api/v1/*`). Authenticated, stdlib-only,
+A Go client for Instagram's private web/mobile API (`api/v1/*`), plus a separate official Meta
+Graph/Marketing API client for professional insights and advertising. Authenticated, stdlib-only,
 zero production dependencies. Mirrors the conventions of [`x-go`](https://github.com/teslashibe/x-go),
 [`linkedin-go`](https://github.com/teslashibe/linkedin-go), and the rest of the teslashibe scraper family.
 
@@ -79,6 +80,20 @@ func main() {
 ```
 
 ## Authentication
+
+This repository has two deliberately separate clients and credential types:
+
+| Client | Package | Credential | Intended capabilities |
+|--------|---------|------------|-----------------------|
+| Private Instagram API | `instagram` (module root) | Browser session cookies | Consumer profiles, feeds, search, social actions |
+| Official Meta Graph API | `instagram/meta` | Facebook Login OAuth bearer token | Professional account/media insights and read-only advertising |
+
+Never put a Meta OAuth token in `Cookies`, and never provide Instagram cookies to
+`meta.New`. The transports, models, errors, and MCP providers are independent.
+See [Official Meta Graph and Marketing API](docs/meta-graph.md) for OAuth scopes,
+token storage, Page linkage, account selection, insight validation, and ad safety.
+
+### Private cookie authentication
 
 Required cookies (export from a logged-in browser session):
 
