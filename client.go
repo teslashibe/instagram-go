@@ -24,6 +24,10 @@ type requestOptions struct {
 	// IsWrite marks the call as a write action — uses writeGap and is more
 	// strictly classified as soft-blocked when the server redirects.
 	IsWrite bool
+	// NoRetry forces a single network attempt. Account-administration writes use
+	// this because a lost response is ambiguous and replaying could overwrite a
+	// value changed concurrently.
+	NoRetry bool
 	// XReferer overrides the Referer header (some endpoints want a tag/profile URL).
 	Referer string
 	// ExtraHeaders are merged on top of the defaults.
@@ -87,6 +91,9 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
+	if opts.NoRetry {
+		maxAttempts = 1
+	}
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -95,7 +102,9 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 		if err := c.waitForCooldownInternal(ctx, opts.IsWrite); err != nil {
 			return nil, nil, err
 		}
-		c.waitForGap(ctx, opts.IsWrite)
+		if err := c.waitForGap(ctx, opts.IsWrite); err != nil {
+			return nil, nil, err
+		}
 
 		req, err := c.buildRequest(ctx, method, u, opts)
 		if err != nil {
@@ -375,6 +384,7 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 		if retry <= 0 {
 			retry = c.cooldownFor(isWrite)
 		}
+		retry = boundedCooldown(isWrite, retry)
 		c.tripCooldown(isWrite, retry, "HTTP 429")
 		return body, fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, retry, apiErr.Error())
 	}
@@ -611,7 +621,7 @@ func (c *Client) sleepBackoff(ctx context.Context, attempt int) {
 
 // waitForGap blocks until enough time has passed since the last request of
 // the same kind.
-func (c *Client) waitForGap(ctx context.Context, isWrite bool) {
+func (c *Client) waitForGap(ctx context.Context, isWrite bool) error {
 	if isWrite {
 		c.writeMu.Lock()
 		defer c.writeMu.Unlock()
@@ -621,12 +631,12 @@ func (c *Client) waitForGap(ctx context.Context, isWrite bool) {
 				select {
 				case <-time.After(c.writeGap - elapsed):
 				case <-ctx.Done():
-					return
+					return ctx.Err()
 				}
 			}
 		}
 		c.lastWriteAt = time.Now()
-		return
+		return nil
 	}
 	c.gapMu.Lock()
 	defer c.gapMu.Unlock()
@@ -636,30 +646,39 @@ func (c *Client) waitForGap(ctx context.Context, isWrite bool) {
 			select {
 			case <-time.After(c.minGap - elapsed):
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			}
 		}
 	}
 	c.lastReqAt = time.Now()
+	return nil
 }
 
 // cooldownFor returns the configured cooldown duration for the request kind.
 func (c *Client) cooldownFor(isWrite bool) time.Duration {
 	if isWrite {
 		if c.writeCooldown > 0 {
-			return c.writeCooldown
+			return boundedCooldown(true, c.writeCooldown)
 		}
 		return defaultWriteCooldown
 	}
 	if c.readCooldown > 0 {
-		return c.readCooldown
+		return boundedCooldown(false, c.readCooldown)
 	}
 	return defaultReadCooldown
+}
+
+func boundedCooldown(isWrite bool, d time.Duration) time.Duration {
+	if isWrite && d > 30*time.Minute {
+		return 30 * time.Minute
+	}
+	return d
 }
 
 // tripCooldown sets the cooldown deadline for the request kind. Subsequent
 // requests of the same kind will block until the deadline (see waitForCooldownInternal).
 func (c *Client) tripCooldown(isWrite bool, d time.Duration, reason string) {
+	d = boundedCooldown(isWrite, d)
 	if d <= 0 {
 		return
 	}
