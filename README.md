@@ -1,7 +1,6 @@
 # instagram-go
 
-A Go client for Instagram's private web/mobile API (`api/v1/*`), plus a separate official Meta
-Graph/Marketing API client for professional insights and advertising. Authenticated, stdlib-only,
+A Go client for Instagram's private web/mobile API (`api/v1/*`). Authenticated, stdlib-only,
 zero production dependencies. Mirrors the conventions of [`x-go`](https://github.com/teslashibe/x-go),
 [`linkedin-go`](https://github.com/teslashibe/linkedin-go), and the rest of the teslashibe scraper family.
 
@@ -14,6 +13,7 @@ import "github.com/teslashibe/instagram-go"
 | Surface              | Read | Write | Tested live |
 |----------------------|:----:|:-----:|:-----------:|
 | Profiles & search    | ✅   | —     | ✅          |
+| Account administration | ✅ | ✅    | (offline; burner opt-in) |
 | Posts / reels / feed | ✅   | ✅    | ✅ (read)   |
 | Comments / likers    | ✅   | ✅    | ✅ (read)   |
 | Followers / friendship| ✅  | ✅    | ✅ (read)   |
@@ -27,6 +27,10 @@ import "github.com/teslashibe/instagram-go"
 Write endpoints are implemented and shape-checked, but their integration tests are
 disabled by default — Instagram is aggressive about silent soft-blocks on write
 actions from server-side IPs. See [Rate limiting](#rate-limiting) below.
+
+Account-administration writes have an additional fail-closed contract: no raw
+request escape hatch, approved fields only, and an expected account ID plus
+explicit before/after values and confirmation on every call.
 
 ## Install
 
@@ -80,20 +84,6 @@ func main() {
 ```
 
 ## Authentication
-
-This repository has two deliberately separate clients and credential types:
-
-| Client | Package | Credential | Intended capabilities |
-|--------|---------|------------|-----------------------|
-| Private Instagram API | `instagram` (module root) | Browser session cookies | Consumer profiles, feeds, search, social actions |
-| Official Meta Graph API | `instagram/meta` | Facebook Login OAuth bearer token | Professional account/media insights and read-only advertising |
-
-Never put a Meta OAuth token in `Cookies`, and never provide Instagram cookies to
-`meta.New`. The transports, models, errors, and MCP providers are independent.
-See [Official Meta Graph and Marketing API](docs/meta-graph.md) for OAuth scopes,
-token storage, Page linkage, account selection, insight validation, and ad safety.
-
-### Private cookie authentication
 
 Required cookies (export from a logged-in browser session):
 
@@ -242,10 +232,9 @@ query-mismatched cursors fail before an HTTP request is made.
 needed by commenting helpers. It intentionally fetches only the first page: the
 live inventory proved response cursor fields but not their continuation request
 parameters. The iterator shape allows pagination to be added compatibly after a
-continuation request is captured; until then, passing a cursor to the iterator
-fails before an HTTP request. The `instagram_search_reels` MCP tool follows the
-same terminal contract: `limit` can truncate that first page, but the tool does
-not return a continuation cursor, and it rejects any supplied cursor before
+continuation request is captured. The `instagram_search_reels` MCP tool follows
+the same terminal contract: `limit` can truncate that first page, but the tool
+does not return a continuation cursor, and it rejects any supplied cursor before
 making an HTTP request.
 `SearchAccounts` returns the richer account SERP context (including friendship
 and social-context fields), while `SearchTypeaheadUsers` returns the lighter
@@ -291,6 +280,34 @@ suggestions, err := client.KeywordTypeahead(ctx, "specialty cof")
 
 Top SERP ranking is personalized and can change between runs. Durable watches
 should deduplicate results by `Post.PK` (falling back to `Post.Code`).
+
+### Safe account administration
+
+The authenticated account read is projected into three safe models. Raw current
+account responses are not exposed because Instagram may include contact or
+security-adjacent fields alongside editable settings.
+
+| Method | Endpoint |
+| --- | --- |
+| `GetCurrentAccount(ctx)` | `GET i.instagram.com/api/v1/accounts/current_user/?edit=true` |
+| `GetAccountSettings(ctx)` | same captured read, reversible-settings projection |
+| `GetProfessionalAccountState(ctx)` | same captured read, professional-state projection |
+| `UpdateProfileFields(ctx, params)` | `POST i.instagram.com/api/v1/accounts/edit_profile/` |
+| `SetPrivacy(ctx, params)` | `POST i.instagram.com/api/v1/accounts/set_private/` or `set_public/` |
+| `UpdateProfessionalSettings(ctx, params)` | `POST i.instagram.com/api/v1/business/account/edit/` |
+
+Each mutation checks `ExpectedAccountID` against both the authenticated
+`ds_user_id` and a fresh read, requires `Confirm: true`, rejects a no-op or stale
+`Before`, sends exactly one write attempt, and re-reads to verify `After` before
+returning success. Profile mutation is limited to full name, biography, and
+external URL. Professional mutation is limited to category ID and category
+visibility on an account that is already professional.
+
+Password, username/email/phone, public contact details, 2FA,
+deletion/deactivation, account conversion, ownership, and security changes are
+not implemented. The same fields are absent from MCP input schemas. The
+captured contract and burner-only verification protocol are documented in
+[`docs/inventory/account-administration.md`](docs/inventory/account-administration.md).
 
 ### Posts & feeds
 
@@ -449,6 +466,8 @@ All errors wrap one of the package sentinels — match with `errors.Is`:
 | `ErrPrivateAccount`     | Resource belongs to a private account viewer doesn't follow     |
 | `ErrMediaUnavailable`   | Post deleted or hidden                                          |
 | `ErrCSRF`               | CSRF token rejected on a write                                  |
+| `ErrAccountMismatch`    | Authenticated account differs from the requested target         |
+| `ErrMutationPrecondition` | Confirmation, before-state, no-op, or verification failed      |
 | `ErrUnexpectedResponse` | Well-formed JSON missing the expected fields                    |
 
 For non-2xx HTTP responses, the wrapped error is also an `*APIError` with
@@ -505,12 +524,25 @@ go test -v -count=1 -run '^TestIntegration_GetPosts$' .
 # ...
 ```
 
+Account-administration smoke tests have stronger guards and must use a dedicated
+burner. Each test registers cleanup before writing and verifies restoration:
+
+```bash
+export INSTAGRAM_ACCOUNT_ADMIN_LIVE_TEST=1
+export INSTAGRAM_ACCOUNT_ADMIN_BURNER_ID="$IG_DS_USER_ID"
+export INSTAGRAM_ACCOUNT_ADMIN_CONFIRM='RESTORE_BURNER_SETTINGS'
+go test -v -count=1 -run '^TestIntegration_AccountAdmin_ProfileRestoresBurner$' .
+```
+
+Run one administration smoke test at a time. Privacy and professional-display
+test names are listed in the account-administration inventory document.
+
 ## MCP support
 
 This package ships an [MCP](https://modelcontextprotocol.io/) tool surface in
 `./mcp` for use with [`teslashibe/mcptool`](https://github.com/teslashibe/mcptool)-compatible
 hosts (e.g. [`teslashibe/agent-setup`](https://github.com/teslashibe/agent-setup)).
-52 tools cover the full client API: profile lookup and search, post/reel/timeline/explore
+58 tools cover the full client API: profile lookup and search, safe account administration, post/reel/timeline/explore
 feeds, comments and likes, followers/following and friendship reads + writes
 (follow/unfollow/block/mute), hashtag and location reads + follow/unfollow,
 stories and highlights, blended top-search, and keyword post/reel search.
