@@ -54,6 +54,7 @@ type SendDirectTextInput struct {
 	ConfirmSend   bool   `json:"confirm_send" jsonschema:"description=must be true to confirm this write mutation,required"`
 	ThreadID      string `json:"thread_id,omitempty" jsonschema:"description=thread ID from a prior uncertain send; requires the matching client_context and skips thread creation"`
 	ClientContext string `json:"client_context,omitempty" jsonschema:"description=optional idempotency context from a prior uncertain send"`
+	RetryToken    string `json:"retry_token,omitempty" jsonschema:"description=authenticated token from a prior uncertain send; required with thread_id"`
 }
 
 func sendDirectText(ctx context.Context, c *instagram.Client, in SendDirectTextInput) (any, error) {
@@ -69,8 +70,15 @@ func sendDirectText(ctx context.Context, c *instagram.Client, in SendDirectTextI
 	if strings.TrimSpace(in.ThreadID) != "" && strings.TrimSpace(in.ClientContext) == "" {
 		return nil, directInvalidInput("client_context is required when thread_id is supplied")
 	}
+	if strings.TrimSpace(in.ThreadID) != "" && strings.TrimSpace(in.RetryToken) == "" {
+		return nil, directInvalidInput("retry_token is required when thread_id is supplied")
+	}
+	if strings.TrimSpace(in.RetryToken) != "" && strings.TrimSpace(in.ThreadID) == "" {
+		return nil, directInvalidInput("thread_id is required when retry_token is supplied")
+	}
 	result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{
-		RecipientID: in.RecipientID, Text: in.Text, ThreadID: in.ThreadID, ClientContext: in.ClientContext,
+		RecipientID: in.RecipientID, Text: in.Text, ThreadID: in.ThreadID,
+		ClientContext: in.ClientContext, RetryToken: in.RetryToken,
 	})
 	if err != nil {
 		return nil, directToolError(err)
@@ -163,6 +171,9 @@ func directToolError(err error) error {
 		if sendErr.ThreadID != "" {
 			data["thread_id"] = sendErr.ThreadID
 		}
+		if sendErr.RetryToken != "" {
+			data["retry_token"] = sendErr.RetryToken
+		}
 	}
 	toolErr := func(code, message string, retryable bool) error {
 		if len(data) == 0 {
@@ -197,7 +208,7 @@ func directToolError(err error) error {
 		return toolErr("unexpected_response", "Instagram Direct returned an unexpected response shape", false)
 	}
 	message := strings.ToLower(err.Error())
-	if strings.Contains(message, "cursor") || strings.Contains(message, "required") ||
+	if strings.Contains(message, "cursor") || strings.Contains(message, "retry token") || strings.Contains(message, "required") ||
 		strings.Contains(message, "must be") || strings.Contains(message, "must not be empty") ||
 		strings.Contains(message, "exceeds 128") {
 		return directInvalidInput(err.Error())
@@ -210,7 +221,7 @@ func directRetryGuidance(sendErr *instagram.DirectSendError, prefix string) stri
 		return prefix
 	}
 	if sendErr.ThreadID != "" {
-		return prefix + "; retry only the broadcast by supplying the returned thread_id and client_context"
+		return prefix + "; retry only the broadcast by supplying the returned thread_id, client_context, and retry_token"
 	}
 	return prefix + "; do not repeat thread creation until the outcome is reconciled"
 }

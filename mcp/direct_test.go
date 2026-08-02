@@ -29,7 +29,7 @@ func TestDirectToolsRegisteredAndSendIsSeparatelyClassified(t *testing.T) {
 	}
 	send := findTool(t, "instagram_send_direct_text")
 	properties := send.InputSchema["properties"].(map[string]any)
-	for _, field := range []string{"recipient_id", "text", "confirm_send", "thread_id", "client_context"} {
+	for _, field := range []string{"recipient_id", "text", "confirm_send", "thread_id", "client_context", "retry_token"} {
 		if _, ok := properties[field]; !ok {
 			t.Fatalf("send schema lacks %q", field)
 		}
@@ -47,6 +47,8 @@ func TestDirectSendRequiresConfirmationRecipientAndTextWithoutHTTP(t *testing.T)
 		`{"text":"hello","confirm_send":true}`,
 		`{"recipient_id":"123","text":"  ","confirm_send":true}`,
 		`{"recipient_id":"123","text":"hello","confirm_send":true,"thread_id":"456"}`,
+		`{"recipient_id":"123","text":"hello","confirm_send":true,"thread_id":"456","client_context":"retry"}`,
+		`{"recipient_id":"123","text":"hello","confirm_send":true,"retry_token":"invalid"}`,
 	} {
 		_, err := findTool(t, "instagram_send_direct_text").Invoke(context.Background(), client, json.RawMessage(input))
 		var toolErr *mcptool.Error
@@ -180,19 +182,63 @@ func TestDirectSendMissingItemIDIsStructuredAndRetrySkipsThreadCreation(t *testi
 	if !errors.As(err, &toolErr) || toolErr.Code != "send_outcome_uncertain" || toolErr.Retryable {
 		t.Fatalf("error=%#v", err)
 	}
-	if toolErr.Data["thread_id"] != "456" || toolErr.Data["client_context"] != "retry-me" ||
+	if toolErr.Data["thread_id"] != "456" || toolErr.Data["client_context"] != "retry-me" || toolErr.Data["retry_token"] == "" ||
 		!strings.Contains(toolErr.Message, "retry only the broadcast") {
 		t.Fatalf("structured reconciliation error=%#v", toolErr)
 	}
 
-	retryRaw, err := tool.Invoke(context.Background(), client,
-		json.RawMessage(`{"recipient_id":"123","text":"hello","confirm_send":true,"thread_id":"456","client_context":"retry-me"}`))
+	retryInput, err := json.Marshal(map[string]any{
+		"recipient_id": "123", "text": "hello", "confirm_send": true,
+		"thread_id": "456", "client_context": "retry-me", "retry_token": toolErr.Data["retry_token"],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryRaw, err := tool.Invoke(context.Background(), client, retryInput)
 	if err != nil {
 		t.Fatalf("broadcast-only retry: %v", err)
 	}
 	retry := retryRaw.(map[string]any)["send"].(*instagram.DirectSendResult)
 	if retry.ItemID != "789" || createRequests != 1 || broadcastRequests != 2 {
 		t.Fatalf("retry=%#v create=%d broadcast=%d", retry, createRequests, broadcastRequests)
+	}
+}
+
+func TestDirectSendRetryTokenRejectsRecipientMismatchWithoutHTTP(t *testing.T) {
+	var createRequests, broadcastRequests int
+	client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/v1/direct_v2/create_group_thread/":
+			createRequests++
+			return mcpJSONResponse(req, http.StatusOK, `{"thread":{"thread_id":"456"},"status":"ok"}`), nil
+		case "/api/v1/direct_v2/threads/broadcast/text/":
+			broadcastRequests++
+			return mcpJSONResponse(req, http.StatusOK, `{"payload":{},"status":"ok"}`), nil
+		default:
+			t.Fatalf("unexpected path %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+	tool := findTool(t, "instagram_send_direct_text")
+	_, err := tool.Invoke(context.Background(), client,
+		json.RawMessage(`{"recipient_id":"123","text":"hello","confirm_send":true,"client_context":"retry-me"}`))
+	var uncertain *mcptool.Error
+	if !errors.As(err, &uncertain) || uncertain.Data["retry_token"] == "" {
+		t.Fatalf("uncertain error = %#v", err)
+	}
+	beforeCreate, beforeBroadcast := createRequests, broadcastRequests
+	mismatch, _ := json.Marshal(map[string]any{
+		"recipient_id": "999", "text": "hello", "confirm_send": true,
+		"thread_id": uncertain.Data["thread_id"], "client_context": uncertain.Data["client_context"],
+		"retry_token": uncertain.Data["retry_token"],
+	})
+	_, err = tool.Invoke(context.Background(), client, mismatch)
+	var toolErr *mcptool.Error
+	if !errors.As(err, &toolErr) || toolErr.Code != "invalid_input" || !strings.Contains(toolErr.Message, "retry token") {
+		t.Fatalf("mismatch error = %#v", err)
+	}
+	if createRequests != beforeCreate || broadcastRequests != beforeBroadcast {
+		t.Fatalf("mismatched recipient made HTTP requests: create=%d broadcast=%d", createRequests, broadcastRequests)
 	}
 }
 

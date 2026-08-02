@@ -56,11 +56,14 @@ and, once known, thread ID so an operator can reconcile an uncertain outcome.
 
 External retries must not merely reuse `client_context`, because that would
 repeat the unproven thread-creation mutation. When `DirectSendError.ThreadID` is
-non-empty, pass both `ThreadID` and `ClientContext` in `DirectTextRequest`; the
-SDK then skips creation and retries only the broadcast. `ThreadID` without a
-client context is rejected before HTTP. MCP exposes the same pair as
-`thread_id`/`client_context`, and mutation errors are not marked automatically
-retryable with unchanged input.
+non-empty, pass `ThreadID`, `ClientContext`, and `RetryToken` in
+`DirectTextRequest`; the SDK then skips creation and retries only the broadcast.
+The retry token is authenticated with the current session and binds the
+recipient ID, thread ID, exact text, and client context. Missing, altered, or
+cross-recipient retry state is rejected before HTTP, so the explicit recipient
+cannot merely label a send whose actual target is another thread. MCP exposes
+the same three values as `thread_id`, `client_context`, and `retry_token`, and
+mutation errors are not marked automatically retryable with unchanged input.
 
 The MCP send tool requires `confirm_send=true`, is the only Direct tool tagged
 `write`, and maps invalid input, expired authentication, security challenges,

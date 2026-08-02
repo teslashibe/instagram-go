@@ -237,6 +237,7 @@ func TestSendDirectTextMissingItemIDIsUncertainAndRetrySkipsThreadCreation(t *te
 		Text:          "hello",
 		ThreadID:      sendErr.ThreadID,
 		ClientContext: sendErr.ClientContext,
+		RetryToken:    sendErr.RetryToken,
 	})
 	if err != nil {
 		t.Fatalf("broadcast-only retry: %v", err)
@@ -258,6 +259,8 @@ func TestSendDirectTextRejectsUnsafeInputBeforeHTTP(t *testing.T) {
 		{RecipientID: "123", Text: " \n\t "},
 		{RecipientID: "123", Text: "hello", ThreadID: "not-numeric", ClientContext: "retry"},
 		{RecipientID: "123", Text: "hello", ThreadID: "456"},
+		{RecipientID: "123", Text: "hello", ThreadID: "456", ClientContext: "retry"},
+		{RecipientID: "123", Text: "hello", RetryToken: "direct-retry-v1.invalid"},
 	} {
 		if _, err := c.SendDirectText(context.Background(), in); err == nil {
 			t.Fatalf("input %#v succeeded", in)
@@ -265,6 +268,59 @@ func TestSendDirectTextRejectsUnsafeInputBeforeHTTP(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("invalid input made %d HTTP requests", requests)
+	}
+}
+
+func TestSendDirectTextRetryTokenBindsRecipientThreadTextAndContextBeforeHTTP(t *testing.T) {
+	createFixture := readDirectFixture(t, "direct_create_thread_response.json")
+	var requests int
+	c := newDirectTestClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch req.URL.Path {
+		case "/api/v1/direct_v2/create_group_thread/":
+			return directResponse(req, http.StatusOK, createFixture), nil
+		case "/api/v1/direct_v2/threads/broadcast/text/":
+			return directResponse(req, http.StatusOK, `{"payload":{},"status":"ok"}`), nil
+		default:
+			t.Fatalf("unexpected path %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	_, err := c.SendDirectText(context.Background(), DirectTextRequest{
+		RecipientID: "100000000000000001", Text: "original text", ClientContext: "bound-context",
+	})
+	var sendErr *DirectSendError
+	if !errors.As(err, &sendErr) || sendErr.RetryToken == "" || sendErr.ThreadID == "" {
+		t.Fatalf("uncertain send error = %#v", err)
+	}
+	requestsAfterInitial := requests
+
+	base := DirectTextRequest{
+		RecipientID: "100000000000000001", Text: "original text", ThreadID: sendErr.ThreadID,
+		ClientContext: sendErr.ClientContext, RetryToken: sendErr.RetryToken,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*DirectTextRequest)
+	}{
+		{name: "recipient", mutate: func(in *DirectTextRequest) { in.RecipientID = "999" }},
+		{name: "thread", mutate: func(in *DirectTextRequest) { in.ThreadID = "999" }},
+		{name: "text", mutate: func(in *DirectTextRequest) { in.Text = "different text" }},
+		{name: "context", mutate: func(in *DirectTextRequest) { in.ClientContext = "different-context" }},
+		{name: "signature", mutate: func(in *DirectTextRequest) { in.RetryToken += "x" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := base
+			tt.mutate(&in)
+			if _, err := c.SendDirectText(context.Background(), in); err == nil || !strings.Contains(err.Error(), "retry token") {
+				t.Fatalf("error = %v, want retry-token rejection", err)
+			}
+		})
+	}
+	if requests != requestsAfterInitial {
+		t.Fatalf("mismatched retry tokens made HTTP requests: before=%d after=%d", requestsAfterInitial, requests)
 	}
 }
 

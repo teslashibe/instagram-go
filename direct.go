@@ -2,6 +2,7 @@ package instagram
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -21,6 +22,7 @@ const (
 	directPageSize           = 20
 	directWriteTimeout       = 30 * time.Second
 	directInboxCursorSurface = "inbox"
+	directRetryTokenPrefix   = "direct-retry-v1."
 )
 
 // DirectSendError preserves the idempotency context for a failed or uncertain
@@ -28,6 +30,7 @@ const (
 type DirectSendError struct {
 	ClientContext string
 	ThreadID      string
+	RetryToken    string
 	Err           error
 }
 
@@ -50,6 +53,14 @@ type directCursor struct {
 	Surface  string `json:"surface"`
 	ThreadID string `json:"thread_id,omitempty"`
 	Cursor   string `json:"cursor"`
+}
+
+type directRetryState struct {
+	Version       int    `json:"v"`
+	RecipientID   string `json:"recipient_id"`
+	ThreadID      string `json:"thread_id"`
+	ClientContext string `json:"client_context"`
+	TextDigest    string `json:"text_digest"`
 }
 
 // GetDirectInbox iterates over threads in the authenticated viewer's primary
@@ -158,8 +169,9 @@ func (c *Client) GetDirectThread(threadID string) *Iterator[*DirectItem] {
 // plain-text item. The entire mutation is capped at 30 seconds. Thread creation
 // is never automatically retried; broadcast retries reuse the same client
 // context, mutation token, and offline threading ID. To retry an uncertain
-// broadcast without repeating non-idempotent thread creation, pass both the
-// ThreadID and ClientContext from DirectSendError.
+// broadcast without repeating non-idempotent thread creation, pass the
+// ThreadID, ClientContext, and RetryToken from DirectSendError. The authenticated
+// token binds those values to the original recipient and text.
 func (c *Client) SendDirectText(ctx context.Context, in DirectTextRequest) (*DirectSendResult, error) {
 	recipientID := strings.TrimSpace(in.RecipientID)
 	text := in.Text
@@ -171,6 +183,7 @@ func (c *Client) SendDirectText(ctx context.Context, in DirectTextRequest) (*Dir
 	}
 	threadID := strings.TrimSpace(in.ThreadID)
 	clientContext := strings.TrimSpace(in.ClientContext)
+	retryToken := strings.TrimSpace(in.RetryToken)
 	if threadID != "" {
 		if err := validateDirectID("threadID", threadID); err != nil {
 			return nil, fmt.Errorf("instagram: SendDirectText: %w", err)
@@ -178,6 +191,14 @@ func (c *Client) SendDirectText(ctx context.Context, in DirectTextRequest) (*Dir
 		if clientContext == "" {
 			return nil, fmt.Errorf("instagram: SendDirectText: clientContext required when threadID is supplied")
 		}
+		if retryToken == "" {
+			return nil, fmt.Errorf("instagram: SendDirectText: retryToken required when threadID is supplied")
+		}
+		if err := c.validateDirectRetryToken(retryToken, recipientID, threadID, text, clientContext); err != nil {
+			return nil, fmt.Errorf("instagram: SendDirectText: %w", err)
+		}
+	} else if retryToken != "" {
+		return nil, fmt.Errorf("instagram: SendDirectText: threadID required when retryToken is supplied")
 	}
 	if clientContext == "" {
 		var err error
@@ -200,14 +221,73 @@ func (c *Client) SendDirectText(ctx context.Context, in DirectTextRequest) (*Dir
 			return nil, &DirectSendError{ClientContext: clientContext, Err: err}
 		}
 	}
-	itemID, status, err := c.broadcastDirectText(writeCtx, threadID, text, clientContext)
+	retryToken, err := c.newDirectRetryToken(recipientID, threadID, text, clientContext)
 	if err != nil {
 		return nil, &DirectSendError{ClientContext: clientContext, ThreadID: threadID, Err: err}
+	}
+	itemID, status, err := c.broadcastDirectText(writeCtx, threadID, text, clientContext)
+	if err != nil {
+		return nil, &DirectSendError{
+			ClientContext: clientContext, ThreadID: threadID, RetryToken: retryToken, Err: err,
+		}
 	}
 	return &DirectSendResult{
 		RecipientID: recipientID, ThreadID: threadID, ItemID: itemID,
 		ClientContext: clientContext, Status: status,
 	}, nil
+}
+
+func (c *Client) newDirectRetryToken(recipientID, threadID, text, clientContext string) (string, error) {
+	state := directRetryState{
+		Version: 1, RecipientID: recipientID, ThreadID: threadID,
+		ClientContext: clientContext, TextDigest: directTextDigest(text),
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return "", fmt.Errorf("encode direct retry token: %w", err)
+	}
+	signature := c.signDirectRetryPayload(payload)
+	return directRetryTokenPrefix + base64.RawURLEncoding.EncodeToString(payload) + "." +
+		base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func (c *Client) validateDirectRetryToken(token, recipientID, threadID, text, clientContext string) error {
+	if !strings.HasPrefix(token, directRetryTokenPrefix) {
+		return fmt.Errorf("invalid retry token")
+	}
+	parts := strings.Split(strings.TrimPrefix(token, directRetryTokenPrefix), ".")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid retry token")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid retry token: %w", err)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !hmac.Equal(signature, c.signDirectRetryPayload(payload)) {
+		return fmt.Errorf("invalid retry token signature")
+	}
+	var state directRetryState
+	if err := json.Unmarshal(payload, &state); err != nil {
+		return fmt.Errorf("invalid retry token: %w", err)
+	}
+	if state.Version != 1 || state.RecipientID != recipientID || state.ThreadID != threadID ||
+		state.ClientContext != clientContext || state.TextDigest != directTextDigest(text) {
+		return fmt.Errorf("retry token does not match recipient, thread, text, or client context")
+	}
+	return nil
+}
+
+func (c *Client) signDirectRetryPayload(payload []byte) []byte {
+	key := sha256.Sum256([]byte(c.cookies.SessionID + "\x00" + c.cookies.CSRFToken + "\x00" + c.cookies.DSUserID))
+	mac := hmac.New(sha256.New, key[:])
+	_, _ = mac.Write(payload)
+	return mac.Sum(nil)
+}
+
+func directTextDigest(text string) string {
+	digest := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(digest[:])
 }
 
 func (c *Client) createDirectThread(ctx context.Context, recipientID string) (string, error) {

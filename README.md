@@ -352,9 +352,11 @@ one is not supplied, uses the same value for the mutation token and every
 broadcast retry, and returns it for reconciliation after an uncertain outcome.
 The whole write is bounded to 30 seconds. Thread creation is not automatically
 retried because its idempotency contract has not been proven. If broadcast
-returns an uncertain outcome, retry with both `ThreadID` and `ClientContext`
-from `DirectSendError`; this skips thread creation and repeats only the
-idempotent broadcast.
+returns an uncertain outcome, retry with `ThreadID`, `ClientContext`, and
+`RetryToken` from `DirectSendError`; this skips thread creation and repeats only
+the idempotent broadcast. The authenticated token binds the resolved thread to
+the explicit recipient and original text, so substituted targets fail before
+HTTP.
 
 ```go
 result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{
@@ -369,6 +371,7 @@ if errors.As(err, &sendErr) && sendErr.ThreadID != "" {
         Text:          "hello from the burner acceptance test",
         ThreadID:      sendErr.ThreadID,
         ClientContext: sendErr.ClientContext,
+        RetryToken:    sendErr.RetryToken,
     })
 }
 ```
@@ -551,8 +554,9 @@ alone is tagged `write` and requires `recipient_id`, non-empty `text`, and
 `confirm_send=true`; hosts can therefore put mutation confirmation around it
 without classifying the read tools as writes. Direct auth, challenge, rate
 limit, CSRF, timeout, and incomplete-send failures are returned as structured
-tool errors. An uncertain broadcast returns `thread_id` and `client_context`;
-supplying both on the next confirmed call retries only the broadcast.
+tool errors. An uncertain broadcast returns `thread_id`, `client_context`, and
+an authenticated `retry_token`; supplying all three on the next confirmed call
+retries only the broadcast after verifying the recipient and text binding.
 
 ```go
 import (
