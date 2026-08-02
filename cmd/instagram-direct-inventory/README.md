@@ -10,7 +10,8 @@ The verifier fails closed unless the HAR contains successful contracts for:
 - retrieval of a thread that was present in that same authenticated inbox;
 - one-recipient thread creation for the explicitly approved burner/self ID;
 - non-empty text broadcast to the created thread with matching
-  `client_context`/`mutation_token` and an `offline_threading_id`.
+  `client_context`/`mutation_token`, an `offline_threading_id`, `status=ok`,
+  and a non-empty `payload.item_id`.
 
 Use an isolated burner conversation or the authenticated account's self-chat.
 Export the HAR only after approving the exact recipient, keep the HAR outside
@@ -30,6 +31,8 @@ header names, response field paths, and pagination field names. It does not
 retain header values, cookies, authorization, CSRF, IDs, cursors, usernames,
 message text, client contexts, or raw payloads. The destination must not exist.
 Human secret review is still required before committing a generated report.
+Numeric object keys are normalized to `{numeric_key}` so Direct dictionaries
+keyed by participant, thread, or item IDs cannot leak those identifiers.
 
 Attachments, reactions, vanish mode, and group administration are outside this
 capture and must not be inferred from fields that happen to appear in a payload.

@@ -252,12 +252,13 @@ type DirectItem struct {
 }
 
 // DirectTextRequest identifies the sole recipient and text for a Direct
-// message. ClientContext may be supplied to safely reconcile/retry an
-// uncertain broadcast; when empty the SDK generates a cryptographically
-// random value and returns it in DirectSendResult.
+// message. ThreadID and ClientContext may be supplied together to safely retry
+// an uncertain broadcast without repeating thread creation. For a new send,
+// leave both empty and the SDK generates a cryptographically random context.
 type DirectTextRequest struct {
 	RecipientID   string `json:"recipient_id"`
 	Text          string `json:"text"`
+	ThreadID      string `json:"thread_id,omitempty"`
 	ClientContext string `json:"client_context,omitempty"`
 }
 

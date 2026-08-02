@@ -351,13 +351,26 @@ non-whitespace text. It creates a cryptographically random `ClientContext` when
 one is not supplied, uses the same value for the mutation token and every
 broadcast retry, and returns it for reconciliation after an uncertain outcome.
 The whole write is bounded to 30 seconds. Thread creation is not automatically
-retried because its idempotency contract has not been proven.
+retried because its idempotency contract has not been proven. If broadcast
+returns an uncertain outcome, retry with both `ThreadID` and `ClientContext`
+from `DirectSendError`; this skips thread creation and repeats only the
+idempotent broadcast.
 
 ```go
 result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{
     RecipientID: "123456789", // explicitly approved burner/self ID
     Text:        "hello from the burner acceptance test",
 })
+
+var sendErr *instagram.DirectSendError
+if errors.As(err, &sendErr) && sendErr.ThreadID != "" {
+    result, err = c.SendDirectText(ctx, instagram.DirectTextRequest{
+        RecipientID:   "123456789",
+        Text:          "hello from the burner acceptance test",
+        ThreadID:      sendErr.ThreadID,
+        ClientContext: sendErr.ClientContext,
+    })
+}
 ```
 
 Only plain text is supported. Attachments, reactions, vanish mode, and group
@@ -537,7 +550,9 @@ The Direct MCP tools are `instagram_get_direct_inbox`,
 alone is tagged `write` and requires `recipient_id`, non-empty `text`, and
 `confirm_send=true`; hosts can therefore put mutation confirmation around it
 without classifying the read tools as writes. Direct auth, challenge, rate
-limit, CSRF, and timeout failures are returned as structured tool errors.
+limit, CSRF, timeout, and incomplete-send failures are returned as structured
+tool errors. An uncertain broadcast returns `thread_id` and `client_context`;
+supplying both on the next confirmed call retries only the broadcast.
 
 ```go
 import (

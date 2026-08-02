@@ -14,6 +14,7 @@ const (
 	testViewerID    = "100000000000000000"
 	testRecipientID = "100000000000000001"
 	testThreadID    = "340282366841710300949128199900000000001"
+	testItemID      = "340282366841710300949128199900000000002"
 )
 
 func completeDirectHAR(t *testing.T, threadID, recipientID string) string {
@@ -32,10 +33,10 @@ func completeDirectHAR(t *testing.T, threadID, recipientID string) string {
 			"response": map[string]any{"status": 200, "content": map[string]any{"text": responseText}},
 		}
 	}
-	inbox := `{"inbox":{"threads":[{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `","username":"private-user"}],"items":[{"item_id":"private-item","item_type":"text","text":"private inbox text"}]}],"oldest_cursor":"private-inbox-cursor","has_older":true},"status":"ok"}`
+	inbox := `{"inbox":{"threads":[{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `","username":"private-user"}],"items":[{"item_id":"private-item","item_type":"text","text":"private inbox text"}]}],"oldest_cursor":"private-inbox-cursor","has_older":true},"last_seen_at":{"` + recipientID + `":"private-timestamp"},"status":"ok"}`
 	thread := `{"thread":{"thread_id":"` + threadID + `","items":[{"item_id":"private-thread-item","user_id":"` + recipientID + `","item_type":"text","text":"private thread text"}],"oldest_cursor":"private-thread-cursor","has_older":true},"status":"ok"}`
 	created := `{"thread":{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `"}]},"status":"ok"}`
-	broadcast := `{"payload":{"item_id":"private-sent-item","client_context":"private-context"},"status":"ok"}`
+	broadcast := `{"payload":{"item_id":"` + testItemID + `","client_context":"private-context"},"status":"ok"}`
 	createForm := "recipient_users=" + urlEscape(`["`+recipientID+`"]`) + "&_uuid=private-device"
 	broadcastForm := "action=send_item&client_context=private-context&mutation_token=private-context&offline_threading_id=123&text=" + urlEscape("private outbound text") + "&thread_ids=" + urlEscape(`["`+threadID+`"]`)
 	doc := map[string]any{"log": map[string]any{"entries": []any{
@@ -78,14 +79,14 @@ func TestInspectDirectHARCapturesAllContractsWithoutPrivateValues(t *testing.T) 
 	rendered := renderDirectReport(report)
 	for _, secret := range []string{
 		"never-retain-session", "never-retain-csrf", "never-retain-auth",
-		testViewerID, testRecipientID, testThreadID, "private inbox text", "private outbound text",
+		testViewerID, testRecipientID, testThreadID, testItemID, "private inbox text", "private outbound text",
 		"private-inbox-cursor", "private-context", "private-user",
 	} {
 		if strings.Contains(rendered, secret) {
 			t.Fatalf("report leaked %q", secret)
 		}
 	}
-	for _, expected := range []string{"Inbox pagination", "Thread retrieval", "{thread_id}", "recipient_users", "client_context", "$.inbox.oldest_cursor"} {
+	for _, expected := range []string{"Inbox pagination", "Thread retrieval", "{thread_id}", "{numeric_key}", "recipient_users", "client_context", "$.inbox.oldest_cursor"} {
 		if !strings.Contains(rendered, expected) {
 			t.Fatalf("report missing %q", expected)
 		}
@@ -124,6 +125,26 @@ func TestInspectDirectHARRejectsIncompleteOrNonIdempotentBroadcast(t *testing.T)
 	_, err = inspectDirectHAR(context.Background(), writeHAR(t, mismatchedContext), testViewerID, testRecipientID, testRecipientID, time.Now)
 	if err == nil || !strings.Contains(err.Error(), "differ") {
 		t.Fatalf("context error=%v", err)
+	}
+}
+
+func TestInspectDirectHARRejects2xxFailureAndBroadcastWithoutItemID(t *testing.T) {
+	complete := completeDirectHAR(t, testThreadID, testRecipientID)
+	statusMarker := `\"status\":\"ok\"`
+	statusIndex := strings.LastIndex(complete, statusMarker)
+	if statusIndex < 0 {
+		t.Fatal("test HAR has no broadcast status marker")
+	}
+	statusFail := complete[:statusIndex] + `\"status\":\"fail\"` + complete[statusIndex+len(statusMarker):]
+	_, err := inspectDirectHAR(context.Background(), writeHAR(t, statusFail), testViewerID, testRecipientID, testRecipientID, time.Now)
+	if err == nil || !strings.Contains(err.Error(), "status=ok") {
+		t.Fatalf("2xx status=fail error=%v", err)
+	}
+
+	missingItemID := strings.Replace(complete, testItemID, "", 1)
+	_, err = inspectDirectHAR(context.Background(), writeHAR(t, missingItemID), testViewerID, testRecipientID, testRecipientID, time.Now)
+	if err == nil || !strings.Contains(err.Error(), "payload.item_id") {
+		t.Fatalf("missing item ID error=%v", err)
 	}
 }
 

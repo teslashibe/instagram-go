@@ -49,8 +49,18 @@ thread creation and text broadcast on the existing write pacer/cooldown budget.
 The operation has a 30-second upper bound. Thread creation is attempted once.
 Broadcast can use the normal bounded retry policy because every retry preserves
 the same `client_context`, `mutation_token`, `offline_threading_id`, thread, and
-text. A failed send returns `DirectSendError` with the client context and, once
-known, thread ID so an operator can reconcile an uncertain outcome.
+text. A successful broadcast must contain captured `status=ok` and a usable
+`payload.item_id`; an incomplete 2xx envelope is `ErrUnexpectedResponse`, not a
+successful send. A failed send returns `DirectSendError` with the client context
+and, once known, thread ID so an operator can reconcile an uncertain outcome.
+
+External retries must not merely reuse `client_context`, because that would
+repeat the unproven thread-creation mutation. When `DirectSendError.ThreadID` is
+non-empty, pass both `ThreadID` and `ClientContext` in `DirectTextRequest`; the
+SDK then skips creation and retries only the broadcast. `ThreadID` without a
+client context is rejected before HTTP. MCP exposes the same pair as
+`thread_id`/`client_context`, and mutation errors are not marked automatically
+retryable with unchanged input.
 
 The MCP send tool requires `confirm_send=true`, is the only Direct tool tagged
 `write`, and maps invalid input, expired authentication, security challenges,
@@ -71,6 +81,10 @@ Write verification additionally requires:
   `IG_DIRECT_BURNER_TARGET_CONFIRM=I_CONFIRM_THIS_IS_A_BURNER`.
 
 No live Direct test runs as part of ordinary `go test ./...`.
+The commands are gates, not evidence of execution. A live run is accepted only
+after its sanitized PASS lines are appended to
+[`docs/direct-live-validation.md`](../direct-live-validation.md); credentials
+and raw output remain local.
 
 ## Unsupported until separately captured
 

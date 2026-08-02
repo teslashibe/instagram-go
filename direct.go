@@ -157,7 +157,9 @@ func (c *Client) GetDirectThread(threadID string) *Iterator[*DirectItem] {
 // SendDirectText creates/resolves a one-recipient thread and broadcasts a
 // plain-text item. The entire mutation is capped at 30 seconds. Thread creation
 // is never automatically retried; broadcast retries reuse the same client
-// context, mutation token, and offline threading ID.
+// context, mutation token, and offline threading ID. To retry an uncertain
+// broadcast without repeating non-idempotent thread creation, pass both the
+// ThreadID and ClientContext from DirectSendError.
 func (c *Client) SendDirectText(ctx context.Context, in DirectTextRequest) (*DirectSendResult, error) {
 	recipientID := strings.TrimSpace(in.RecipientID)
 	text := in.Text
@@ -167,7 +169,16 @@ func (c *Client) SendDirectText(ctx context.Context, in DirectTextRequest) (*Dir
 	if strings.TrimSpace(text) == "" {
 		return nil, fmt.Errorf("instagram: SendDirectText: text must not be empty")
 	}
+	threadID := strings.TrimSpace(in.ThreadID)
 	clientContext := strings.TrimSpace(in.ClientContext)
+	if threadID != "" {
+		if err := validateDirectID("threadID", threadID); err != nil {
+			return nil, fmt.Errorf("instagram: SendDirectText: %w", err)
+		}
+		if clientContext == "" {
+			return nil, fmt.Errorf("instagram: SendDirectText: clientContext required when threadID is supplied")
+		}
+	}
 	if clientContext == "" {
 		var err error
 		clientContext, err = newDirectClientContext()
@@ -182,9 +193,12 @@ func (c *Client) SendDirectText(ctx context.Context, in DirectTextRequest) (*Dir
 	writeCtx, cancel := context.WithTimeout(ctx, directWriteTimeout)
 	defer cancel()
 
-	threadID, err := c.createDirectThread(writeCtx, recipientID)
-	if err != nil {
-		return nil, &DirectSendError{ClientContext: clientContext, Err: err}
+	if threadID == "" {
+		var err error
+		threadID, err = c.createDirectThread(writeCtx, recipientID)
+		if err != nil {
+			return nil, &DirectSendError{ClientContext: clientContext, Err: err}
+		}
 	}
 	itemID, status, err := c.broadcastDirectText(writeCtx, threadID, text, clientContext)
 	if err != nil {
@@ -213,6 +227,9 @@ func (c *Client) createDirectThread(ctx context.Context, recipientID string) (st
 		Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1,
 	}, &resp); err != nil {
 		return "", err
+	}
+	if resp.Status != "ok" {
+		return "", fmt.Errorf("%w: direct thread creation response omitted status=ok", ErrUnexpectedResponse)
 	}
 	threadID := stringifyID(resp.Thread.ID, resp.ThreadID)
 	if err := validateDirectID("created thread ID", threadID); err != nil {
@@ -246,7 +263,13 @@ func (c *Client) broadcastDirectText(ctx context.Context, threadID, text, client
 	}, &resp); err != nil {
 		return "", "", err
 	}
+	if resp.Status != "ok" {
+		return "", "", fmt.Errorf("%w: direct text broadcast response omitted status=ok", ErrUnexpectedResponse)
+	}
 	itemID := stringifyID(resp.Payload.ItemID, resp.ItemID)
+	if err := validateDirectID("broadcast item ID", itemID); err != nil {
+		return "", "", fmt.Errorf("%w: direct text broadcast returned no usable item ID", ErrUnexpectedResponse)
+	}
 	return itemID, resp.Status, nil
 }
 

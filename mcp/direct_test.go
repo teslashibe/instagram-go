@@ -29,7 +29,7 @@ func TestDirectToolsRegisteredAndSendIsSeparatelyClassified(t *testing.T) {
 	}
 	send := findTool(t, "instagram_send_direct_text")
 	properties := send.InputSchema["properties"].(map[string]any)
-	for _, field := range []string{"recipient_id", "text", "confirm_send", "client_context"} {
+	for _, field := range []string{"recipient_id", "text", "confirm_send", "thread_id", "client_context"} {
 		if _, ok := properties[field]; !ok {
 			t.Fatalf("send schema lacks %q", field)
 		}
@@ -46,6 +46,7 @@ func TestDirectSendRequiresConfirmationRecipientAndTextWithoutHTTP(t *testing.T)
 		`{"recipient_id":"123","text":"hello","confirm_send":false}`,
 		`{"text":"hello","confirm_send":true}`,
 		`{"recipient_id":"123","text":"  ","confirm_send":true}`,
+		`{"recipient_id":"123","text":"hello","confirm_send":true,"thread_id":"456"}`,
 	} {
 		_, err := findTool(t, "instagram_send_direct_text").Invoke(context.Background(), client, json.RawMessage(input))
 		var toolErr *mcptool.Error
@@ -151,6 +152,47 @@ func TestDirectSendStructuredErrorIncludesClientContext(t *testing.T) {
 	var toolErr *mcptool.Error
 	if !errors.As(err, &toolErr) || toolErr.Code != "challenge_required" || toolErr.Data["client_context"] != "retry-me" {
 		t.Fatalf("error=%#v", err)
+	}
+}
+
+func TestDirectSendMissingItemIDIsStructuredAndRetrySkipsThreadCreation(t *testing.T) {
+	var createRequests, broadcastRequests int
+	client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/v1/direct_v2/create_group_thread/":
+			createRequests++
+			return mcpJSONResponse(req, http.StatusOK, `{"thread":{"thread_id":"456"},"status":"ok"}`), nil
+		case "/api/v1/direct_v2/threads/broadcast/text/":
+			broadcastRequests++
+			if broadcastRequests == 1 {
+				return mcpJSONResponse(req, http.StatusOK, `{"payload":{},"status":"ok"}`), nil
+			}
+			return mcpJSONResponse(req, http.StatusOK, `{"payload":{"item_id":"789"},"status":"ok"}`), nil
+		default:
+			t.Fatalf("unexpected path %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+	tool := findTool(t, "instagram_send_direct_text")
+	_, err := tool.Invoke(context.Background(), client,
+		json.RawMessage(`{"recipient_id":"123","text":"hello","confirm_send":true,"client_context":"retry-me"}`))
+	var toolErr *mcptool.Error
+	if !errors.As(err, &toolErr) || toolErr.Code != "send_outcome_uncertain" || toolErr.Retryable {
+		t.Fatalf("error=%#v", err)
+	}
+	if toolErr.Data["thread_id"] != "456" || toolErr.Data["client_context"] != "retry-me" ||
+		!strings.Contains(toolErr.Message, "retry only the broadcast") {
+		t.Fatalf("structured reconciliation error=%#v", toolErr)
+	}
+
+	retryRaw, err := tool.Invoke(context.Background(), client,
+		json.RawMessage(`{"recipient_id":"123","text":"hello","confirm_send":true,"thread_id":"456","client_context":"retry-me"}`))
+	if err != nil {
+		t.Fatalf("broadcast-only retry: %v", err)
+	}
+	retry := retryRaw.(map[string]any)["send"].(*instagram.DirectSendResult)
+	if retry.ItemID != "789" || createRequests != 1 || broadcastRequests != 2 {
+		t.Fatalf("retry=%#v create=%d broadcast=%d", retry, createRequests, broadcastRequests)
 	}
 }
 

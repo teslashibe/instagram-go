@@ -154,6 +154,10 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 	if len(broadcastThreads) != 1 || !contains(createdThreadIDs, broadcastThreads[0]) {
 		return directReport{}, errors.New("text broadcast did not target the captured created thread")
 	}
+	broadcastItemID, ok := nestedScalarString(broadcast.body, "payload", "item_id")
+	if !ok || validateNumeric("text broadcast item ID", broadcastItemID) != nil {
+		return directReport{}, errors.New("text broadcast response contained no payload.item_id")
+	}
 
 	if now == nil {
 		now = time.Now
@@ -182,6 +186,10 @@ func inspectDirectEntry(entry harEntry) (capturedDirectEntry, string, bool, erro
 	dec.UseNumber()
 	if err := dec.Decode(&body); err != nil {
 		return capturedDirectEntry{}, "", false, fmt.Errorf("%s response is not JSON: %w", strings.ToLower(name), err)
+	}
+	status, ok := nestedScalarString(body, "status")
+	if !ok || status != "ok" {
+		return capturedDirectEntry{}, "", false, fmt.Errorf("%s response did not contain status=ok", strings.ToLower(name))
 	}
 	form := u.Query()
 	requestFields := valueKeys(form)
@@ -247,7 +255,7 @@ func collectFieldPaths(node any, path string, out []string) []string {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			childPath := path + "." + key
+			childPath := path + "." + redactDirectResponseKey(key)
 			out = append(out, childPath)
 			out = collectFieldPaths(value[key], childPath, out)
 		}
@@ -259,6 +267,38 @@ func collectFieldPaths(node any, path string, out []string) []string {
 		}
 	}
 	return uniqueSorted(out)
+}
+
+// redactDirectResponseKey prevents dynamic maps keyed by participant, thread,
+// or item IDs from copying those private identifiers into the generated shape
+// report. Static Direct response field names are retained.
+func redactDirectResponseKey(key string) string {
+	if validateNumeric("response object key", key) == nil {
+		return "{numeric_key}"
+	}
+	return key
+}
+
+func nestedScalarString(node any, path ...string) (string, bool) {
+	current := node
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return "", false
+		}
+		current, ok = object[key]
+		if !ok {
+			return "", false
+		}
+	}
+	switch value := current.(type) {
+	case string:
+		return value, value != ""
+	case json.Number:
+		return value.String(), value.String() != ""
+	default:
+		return "", false
+	}
 }
 
 func collectStringValues(node any, key string) []string {

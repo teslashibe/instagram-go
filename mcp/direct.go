@@ -52,6 +52,7 @@ type SendDirectTextInput struct {
 	RecipientID   string `json:"recipient_id" jsonschema:"description=explicit numeric Instagram user ID of the sole recipient,required"`
 	Text          string `json:"text" jsonschema:"description=non-empty plain-text message body,required"`
 	ConfirmSend   bool   `json:"confirm_send" jsonschema:"description=must be true to confirm this write mutation,required"`
+	ThreadID      string `json:"thread_id,omitempty" jsonschema:"description=thread ID from a prior uncertain send; requires the matching client_context and skips thread creation"`
 	ClientContext string `json:"client_context,omitempty" jsonschema:"description=optional idempotency context from a prior uncertain send"`
 }
 
@@ -65,8 +66,11 @@ func sendDirectText(ctx context.Context, c *instagram.Client, in SendDirectTextI
 	if !in.ConfirmSend {
 		return nil, directInvalidInput("confirm_send must be true for this write mutation")
 	}
+	if strings.TrimSpace(in.ThreadID) != "" && strings.TrimSpace(in.ClientContext) == "" {
+		return nil, directInvalidInput("client_context is required when thread_id is supplied")
+	}
 	result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{
-		RecipientID: in.RecipientID, Text: in.Text, ClientContext: in.ClientContext,
+		RecipientID: in.RecipientID, Text: in.Text, ThreadID: in.ThreadID, ClientContext: in.ClientContext,
 	})
 	if err != nil {
 		return nil, directToolError(err)
@@ -168,17 +172,29 @@ func directToolError(err error) error {
 	}
 	switch {
 	case errors.Is(err, instagram.ErrSessionExpired), errors.Is(err, instagram.ErrInvalidAuth):
-		return toolErr("credential_expired", "Instagram session expired; reconnect Instagram", false)
+		return toolErr("credential_expired", directRetryGuidance(sendErr,
+			"Instagram session expired; reconnect Instagram"), false)
 	case errors.Is(err, instagram.ErrChallengeRequired):
-		return toolErr("challenge_required", "Instagram requires a security challenge before Direct can continue", false)
+		return toolErr("challenge_required", directRetryGuidance(sendErr,
+			"Instagram requires a security challenge before Direct can continue"), false)
 	case errors.Is(err, instagram.ErrRateLimited), errors.Is(err, instagram.ErrWriteSoftBlock):
-		return toolErr("rate_limited", "Instagram Direct is rate limited; wait for the write cooldown before retrying", true)
+		return toolErr("rate_limited", directRetryGuidance(sendErr,
+			"Instagram Direct is rate limited; wait for the write cooldown"), false)
 	case errors.Is(err, instagram.ErrCSRF):
-		return toolErr("csrf_rejected", "Instagram rejected the write CSRF token; reconnect before retrying", false)
+		return toolErr("csrf_rejected", directRetryGuidance(sendErr,
+			"Instagram rejected the write CSRF token; reconnect before retrying"), false)
 	case errors.Is(err, context.DeadlineExceeded):
-		return toolErr("operation_timed_out", "Instagram Direct timed out; outcome may be uncertain, so reuse client_context", false)
+		return toolErr("operation_timed_out", directRetryGuidance(sendErr,
+			"Instagram Direct timed out and the outcome may be uncertain"), false)
 	case errors.Is(err, context.Canceled):
-		return toolErr("operation_canceled", "Instagram Direct operation was canceled", false)
+		return toolErr("operation_canceled", directRetryGuidance(sendErr,
+			"Instagram Direct operation was canceled"), false)
+	case errors.Is(err, instagram.ErrUnexpectedResponse):
+		if sendErr != nil {
+			return toolErr("send_outcome_uncertain", directRetryGuidance(sendErr,
+				"Instagram Direct returned an incomplete send result"), false)
+		}
+		return toolErr("unexpected_response", "Instagram Direct returned an unexpected response shape", false)
 	}
 	message := strings.ToLower(err.Error())
 	if strings.Contains(message, "cursor") || strings.Contains(message, "required") ||
@@ -187,6 +203,16 @@ func directToolError(err error) error {
 		return directInvalidInput(err.Error())
 	}
 	return err
+}
+
+func directRetryGuidance(sendErr *instagram.DirectSendError, prefix string) string {
+	if sendErr == nil {
+		return prefix
+	}
+	if sendErr.ThreadID != "" {
+		return prefix + "; retry only the broadcast by supplying the returned thread_id and client_context"
+	}
+	return prefix + "; do not repeat thread creation until the outcome is reconciled"
 }
 
 func defineDirectSendTool() mcptool.Tool {

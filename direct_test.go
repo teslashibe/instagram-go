@@ -200,6 +200,52 @@ func TestSendDirectTextDoesNotRetryThreadCreation(t *testing.T) {
 	}
 }
 
+func TestSendDirectTextMissingItemIDIsUncertainAndRetrySkipsThreadCreation(t *testing.T) {
+	createFixture := readDirectFixture(t, "direct_create_thread_response.json")
+	broadcastFixture := readDirectFixture(t, "direct_text_broadcast_response.json")
+	var createRequests, broadcastRequests int
+	c := newDirectTestClient(t, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/v1/direct_v2/create_group_thread/":
+			createRequests++
+			return directResponse(req, http.StatusOK, createFixture), nil
+		case "/api/v1/direct_v2/threads/broadcast/text/":
+			broadcastRequests++
+			if broadcastRequests == 1 {
+				return directResponse(req, http.StatusOK, `{"payload":{},"status":"ok"}`), nil
+			}
+			return directResponse(req, http.StatusOK, broadcastFixture), nil
+		default:
+			t.Fatalf("unexpected path %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	_, err := c.SendDirectText(context.Background(), DirectTextRequest{
+		RecipientID: "100000000000000001", Text: "hello", ClientContext: "same-logical-send",
+	})
+	var sendErr *DirectSendError
+	if !errors.Is(err, ErrUnexpectedResponse) || !errors.As(err, &sendErr) {
+		t.Fatalf("error=%#v, want uncertain ErrUnexpectedResponse", err)
+	}
+	if sendErr.ThreadID == "" || sendErr.ClientContext != "same-logical-send" {
+		t.Fatalf("reconciliation data=%#v", sendErr)
+	}
+
+	result, err := c.SendDirectText(context.Background(), DirectTextRequest{
+		RecipientID:   "100000000000000001",
+		Text:          "hello",
+		ThreadID:      sendErr.ThreadID,
+		ClientContext: sendErr.ClientContext,
+	})
+	if err != nil {
+		t.Fatalf("broadcast-only retry: %v", err)
+	}
+	if result.ItemID == "" || createRequests != 1 || broadcastRequests != 2 {
+		t.Fatalf("result=%#v create=%d broadcast=%d", result, createRequests, broadcastRequests)
+	}
+}
+
 func TestSendDirectTextRejectsUnsafeInputBeforeHTTP(t *testing.T) {
 	var requests int
 	c := newDirectTestClient(t, func(req *http.Request) (*http.Response, error) {
@@ -210,6 +256,8 @@ func TestSendDirectTextRejectsUnsafeInputBeforeHTTP(t *testing.T) {
 		{RecipientID: "", Text: "hello"},
 		{RecipientID: "not-numeric", Text: "hello"},
 		{RecipientID: "123", Text: " \n\t "},
+		{RecipientID: "123", Text: "hello", ThreadID: "not-numeric", ClientContext: "retry"},
+		{RecipientID: "123", Text: "hello", ThreadID: "456"},
 	} {
 		if _, err := c.SendDirectText(context.Background(), in); err == nil {
 			t.Fatalf("input %#v succeeded", in)

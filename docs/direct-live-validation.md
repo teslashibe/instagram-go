@@ -10,6 +10,17 @@ matched the sole captured write target.
 No account, recipient, thread, item, cursor, text, client-context, cookie, CSRF,
 authorization, or device value is retained in this record.
 
+Verification status: **contract capture verified; SDK live read/send PASS not
+yet recorded**. The commands below are a fail-closed procedure, not evidence
+that they ran. This record must not claim the live acceptance criterion until an
+operator runs both commands with local burner credentials and appends only
+these sanitized outcomes:
+
+```text
+PASS: read <count> items from one thread selected only from the authenticated inbox
+PASS: sent one confirmed text item to the explicitly approved burner/self target
+```
+
 To repeat the read verification:
 
 ```bash
