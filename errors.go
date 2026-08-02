@@ -29,6 +29,38 @@ var (
 	// complete a security challenge (checkpoint) before continuing.
 	ErrChallengeRequired = errors.New("instagram: checkpoint / challenge required")
 
+	// ErrFeedbackRequired is returned when Instagram rejects publishing with
+	// feedback_required. It is also classified as ErrWriteSoftBlock so existing
+	// callers that only understand the broader write classification keep working.
+	ErrFeedbackRequired = errors.New("instagram: feedback required")
+
+	// ErrProcessingFailed is returned when Instagram accepts an upload but its
+	// asynchronous media processor reaches a terminal failure state.
+	ErrProcessingFailed = errors.New("instagram: media processing failed")
+
+	// ErrProcessingTimeout is returned when an uploaded media item does not
+	// reach a captured terminal processing state before the processing deadline.
+	ErrProcessingTimeout = errors.New("instagram: media processing timed out")
+
+	// ErrPartialUpload is returned after Instagram may have accepted upload
+	// bytes but a later upload/configure/status stage failed. Callers must not
+	// blindly retry with a different idempotency key.
+	ErrPartialUpload = errors.New("instagram: partial upload")
+
+	// ErrUploadTooLarge is returned locally, before any request, when declared
+	// or streamed media exceeds the configured upload limit.
+	ErrUploadTooLarge = errors.New("instagram: upload too large")
+
+	// ErrInvalidPublishInput is returned locally, before any request, when
+	// publishing metadata, MIME type, dimensions, duration, or stream length is
+	// invalid.
+	ErrInvalidPublishInput = errors.New("instagram: invalid publishing input")
+
+	// ErrPublishingCaptureRequired is returned before consuming media or making
+	// an HTTP request while no reviewed, current burner capture is compiled into
+	// the SDK. Publishing deliberately fails closed until that evidence exists.
+	ErrPublishingCaptureRequired = errors.New("instagram: verified publishing capture required")
+
 	// ErrNotFound is returned for 404s and for usernames/IDs that resolve to
 	// a user_not_found response from Instagram.
 	ErrNotFound = errors.New("instagram: not found")

@@ -40,6 +40,19 @@ type requestOptions struct {
 	FormBody url.Values
 	// JSONBody, if non-nil, is sent as application/json.
 	JSONBody any
+	// RawBody, if non-nil, is sent verbatim. Publishing uses this for bounded
+	// rupload requests after reading a caller stream through a strict limit.
+	RawBody []byte
+	// ContentLength sets the request's declared entity length. A negative value
+	// leaves net/http's default behavior unchanged.
+	ContentLength int64
+	// MaxAttempts overrides the client retry count for this request. Publishing
+	// uploads set this to 1 because a partially accepted body is unsafe to retry.
+	MaxAttempts int
+	// ContextControlsTimeout disables http.Client.Timeout for this request. The
+	// caller must supply a bounded context. Publishing uses this so its explicit
+	// upload/processing deadlines are not truncated by the client's 30s default.
+	ContextControlsTimeout bool
 }
 
 type requestHost uint8
@@ -117,7 +130,13 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 			return nil, nil, err
 		}
 
-		resp, err := c.httpClient.Do(req)
+		httpClient := c.httpClient
+		if opts.ContextControlsTimeout && c.httpClient.Timeout != 0 {
+			clone := *c.httpClient
+			clone.Timeout = 0
+			httpClient = &clone
+		}
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("instagram: http %s %s: %w", method, u, err)
 			if !shouldRetryNetErr(err) || attempt == maxAttempts {
@@ -167,6 +186,8 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		}
 		bodyReader = bytes.NewReader(buf)
 		contentType = "application/json"
+	case opts.RawBody != nil:
+		bodyReader = bytes.NewReader(opts.RawBody)
 	case opts.FormBody != nil:
 		bodyReader = strings.NewReader(opts.FormBody.Encode())
 		contentType = "application/x-www-form-urlencoded"
@@ -222,6 +243,12 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	if opts.RawBody != nil {
+		req.ContentLength = int64(len(opts.RawBody))
+	}
+	if opts.ContentLength >= 0 && (opts.RawBody != nil || opts.ContentLength > 0) {
+		req.ContentLength = opts.ContentLength
 	}
 
 	for k, v := range opts.ExtraHeaders {
@@ -520,9 +547,12 @@ func (c *Client) mapKnownMessage(message string, apiErr *APIError, isWrite bool)
 		}
 		c.tripCooldown(isWrite, cd, "feedback_required")
 		if isWrite {
-			return fmt.Errorf("%w: cooldown for %s (%s)", ErrWriteSoftBlock, cd, apiErr.Error()), true
+			return fmt.Errorf("%w: %w: cooldown for %s (%s)", ErrFeedbackRequired, ErrWriteSoftBlock, cd, apiErr.Error()), true
 		}
-		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error()), true
+		return fmt.Errorf("%w: %w: cooldown for %s (%s)", ErrFeedbackRequired, ErrRateLimited, cd, apiErr.Error()), true
+	case strings.Contains(msg, "transcode") || strings.Contains(msg, "processing_failed") ||
+		strings.Contains(msg, "processing failed") || strings.Contains(msg, "media processing error"):
+		return fmt.Errorf("%w: %s", ErrProcessingFailed, apiErr.Error()), true
 	}
 	return nil, false
 }
@@ -596,7 +626,9 @@ func shouldRetryStatus(status int, err error) bool {
 	if errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrWriteSoftBlock) ||
 		errors.Is(err, ErrChallengeRequired) || errors.Is(err, ErrInvalidAuth) ||
 		errors.Is(err, ErrNotFound) || errors.Is(err, ErrPrivateAccount) ||
-		errors.Is(err, ErrMediaUnavailable) || errors.Is(err, ErrCSRF) {
+		errors.Is(err, ErrMediaUnavailable) || errors.Is(err, ErrCSRF) ||
+		errors.Is(err, ErrFeedbackRequired) || errors.Is(err, ErrProcessingFailed) ||
+		errors.Is(err, ErrPartialUpload) {
 		return false
 	}
 	// Once a cooldown is tripped, immediate retries are pointless and would
