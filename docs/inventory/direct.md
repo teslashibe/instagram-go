@@ -16,11 +16,15 @@ and pagination field names. It excludes cookies, authorization, CSRF values,
 viewer/recipient/thread/item IDs, usernames, text, cursors, client contexts,
 device identifiers, raw payloads, and CDN URLs.
 
-The verifier accepts a read contract only when the selected thread ID appeared
-in the authenticated viewer's captured inbox. It accepts write evidence only
-when the thread creation contains exactly one recipient, the approved and
-confirmed burner/self IDs match that recipient, and broadcast targets the
-created thread with non-empty text and stable idempotency fields.
+The verifier accepts a read contract only when `inbox.threads` is non-empty,
+the selected path ID appears specifically at `inbox.threads[].thread_id`, the
+thread response repeats that ID and contains typed items, and both responses
+prove continuation with boolean `has_older=true` plus a non-empty
+`oldest_cursor`. Unrelated nested `thread_id` values cannot establish inbox
+ownership. It accepts write evidence only when the thread creation contains
+exactly one recipient, the approved and confirmed burner/self IDs match that
+recipient, and broadcast targets the exact `thread.thread_id` returned by
+creation with non-empty text and stable idempotency fields.
 
 ## Captured endpoints
 

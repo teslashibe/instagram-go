@@ -124,18 +124,24 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 		}
 	}
 
-	inboxThreads := collectStringValues(found["Inbox pagination"].body, "thread_id")
+	inboxThreads, err := validateDirectInboxContract(found["Inbox pagination"].body)
+	if err != nil {
+		return directReport{}, err
+	}
 	threadID := found["Thread retrieval"].pathID
-	if threadID == "" || !contains(inboxThreads, threadID) {
-		return directReport{}, errors.New("thread retrieval did not read a thread from the authenticated viewer's inbox")
+	if !contains(inboxThreads, threadID) {
+		return directReport{}, errors.New("thread retrieval did not read a thread from inbox.threads[] in the authenticated viewer's inbox")
+	}
+	if err := validateDirectThreadContract(found["Thread retrieval"].body, threadID); err != nil {
+		return directReport{}, err
 	}
 	create := found["Thread creation"]
 	recipients := parseJSONStrings(create.form.Get("recipient_users"))
 	if len(recipients) != 1 || recipients[0] != approvedRecipient {
 		return directReport{}, errors.New("thread creation recipient is not the sole explicitly approved burner/self target")
 	}
-	createdThreadIDs := collectStringValues(create.body, "thread_id")
-	if len(createdThreadIDs) == 0 {
+	createdThreadID, ok := nestedScalarString(create.body, "thread", "thread_id")
+	if !ok || validateNumeric("created thread ID", createdThreadID) != nil {
 		return directReport{}, errors.New("thread creation response contained no thread_id")
 	}
 	broadcast := found["Text broadcast"]
@@ -151,7 +157,7 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 		return directReport{}, errors.New("text broadcast client_context and mutation_token differ")
 	}
 	broadcastThreads := parseJSONStrings(broadcast.form.Get("thread_ids"))
-	if len(broadcastThreads) != 1 || !contains(createdThreadIDs, broadcastThreads[0]) {
+	if len(broadcastThreads) != 1 || broadcastThreads[0] != createdThreadID {
 		return directReport{}, errors.New("text broadcast did not target the captured created thread")
 	}
 	broadcastItemID, ok := nestedScalarString(broadcast.body, "payload", "item_id")
@@ -167,6 +173,121 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 		report.Surfaces = append(report.Surfaces, found[name].surface)
 	}
 	return report, nil
+}
+
+// validateDirectInboxContract requires the captured inbox response to prove
+// the exact collection and continuation shape used by GetDirectInbox. Thread
+// ownership must be derived only from inbox.threads[].thread_id; a thread_id in
+// an unrelated nested object is not evidence that the viewer owns that thread.
+func validateDirectInboxContract(body any) ([]string, error) {
+	inbox, ok := nestedObject(body, "inbox")
+	if !ok {
+		return nil, errors.New("inbox pagination response omitted inbox object")
+	}
+	threads, ok := inbox["threads"].([]any)
+	if !ok || len(threads) == 0 {
+		return nil, errors.New("inbox pagination response omitted non-empty inbox.threads array")
+	}
+	if err := validateCapturedPagination(inbox, "inbox"); err != nil {
+		return nil, err
+	}
+
+	threadIDs := make([]string, 0, len(threads))
+	for _, value := range threads {
+		thread, ok := value.(map[string]any)
+		if !ok {
+			return nil, errors.New("inbox pagination response contained a non-object inbox.threads item")
+		}
+		threadID, ok := scalarString(thread["thread_id"])
+		if !ok || validateNumeric("inbox thread ID", threadID) != nil {
+			return nil, errors.New("inbox pagination response contained an inbox.threads item without a numeric thread_id")
+		}
+		threadIDs = append(threadIDs, threadID)
+	}
+	return uniqueSorted(threadIDs), nil
+}
+
+// validateDirectThreadContract requires both the selected thread identity and
+// the item/pagination structures consumed by GetDirectThread. This prevents a
+// generic status=ok envelope from being certified as a thread-read contract.
+func validateDirectThreadContract(body any, pathThreadID string) error {
+	if validateNumeric("thread retrieval path ID", pathThreadID) != nil {
+		return errors.New("thread retrieval path contained no numeric thread ID")
+	}
+	thread, ok := nestedObject(body, "thread")
+	if !ok {
+		return errors.New("thread retrieval response omitted thread object")
+	}
+	responseThreadID, ok := scalarString(thread["thread_id"])
+	if !ok || responseThreadID != pathThreadID {
+		return errors.New("thread retrieval response thread.thread_id did not match the requested thread")
+	}
+	items, ok := thread["items"].([]any)
+	if !ok || len(items) == 0 {
+		return errors.New("thread retrieval response omitted non-empty thread.items array")
+	}
+	if err := validateCapturedPagination(thread, "thread"); err != nil {
+		return err
+	}
+	for _, value := range items {
+		item, ok := value.(map[string]any)
+		if !ok {
+			return errors.New("thread retrieval response contained a non-object thread.items item")
+		}
+		itemID, itemIDOK := scalarString(item["item_id"])
+		userID, userIDOK := scalarString(item["user_id"])
+		itemType, itemTypeOK := scalarString(item["item_type"])
+		if !itemIDOK || validateNumeric("thread item ID", itemID) != nil ||
+			!userIDOK || validateNumeric("thread item user ID", userID) != nil ||
+			!itemTypeOK || strings.TrimSpace(itemType) == "" {
+			return errors.New("thread retrieval response contained a thread.items item without item_id, user_id, or item_type")
+		}
+	}
+	return nil
+}
+
+func validateCapturedPagination(container map[string]any, name string) error {
+	hasOlder, ok := container["has_older"].(bool)
+	if !ok {
+		return fmt.Errorf("%s pagination response omitted boolean %s.has_older", name, name)
+	}
+	cursor, cursorOK := scalarString(container["oldest_cursor"])
+	if !cursorOK || strings.TrimSpace(cursor) == "" {
+		return fmt.Errorf("%s pagination response omitted non-empty %s.oldest_cursor", name, name)
+	}
+	if !hasOlder {
+		return fmt.Errorf("%s pagination response did not prove continuation because %s.has_older was false", name, name)
+	}
+	return nil
+}
+
+func nestedObject(node any, path ...string) (map[string]any, bool) {
+	current, ok := node.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	for _, key := range path {
+		next, exists := current[key]
+		if !exists {
+			return nil, false
+		}
+		current, ok = next.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func scalarString(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, typed != ""
+	case json.Number:
+		return typed.String(), typed.String() != ""
+	default:
+		return "", false
+	}
 }
 
 func inspectDirectEntry(entry harEntry) (capturedDirectEntry, string, bool, error) {
@@ -299,33 +420,6 @@ func nestedScalarString(node any, path ...string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func collectStringValues(node any, key string) []string {
-	var out []string
-	var walk func(any)
-	walk = func(value any) {
-		switch typed := value.(type) {
-		case map[string]any:
-			for k, child := range typed {
-				if k == key {
-					switch scalar := child.(type) {
-					case string:
-						out = append(out, scalar)
-					case json.Number:
-						out = append(out, scalar.String())
-					}
-				}
-				walk(child)
-			}
-		case []any:
-			for _, child := range typed {
-				walk(child)
-			}
-		}
-	}
-	walk(node)
-	return uniqueSorted(out)
 }
 
 func parseJSONStrings(value string) []string {

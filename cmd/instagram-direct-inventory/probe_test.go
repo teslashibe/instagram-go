@@ -34,7 +34,7 @@ func completeDirectHAR(t *testing.T, threadID, recipientID string) string {
 		}
 	}
 	inbox := `{"inbox":{"threads":[{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `","username":"private-user"}],"items":[{"item_id":"private-item","item_type":"text","text":"private inbox text"}]}],"oldest_cursor":"private-inbox-cursor","has_older":true},"last_seen_at":{"` + recipientID + `":"private-timestamp"},"status":"ok"}`
-	thread := `{"thread":{"thread_id":"` + threadID + `","items":[{"item_id":"private-thread-item","user_id":"` + recipientID + `","item_type":"text","text":"private thread text"}],"oldest_cursor":"private-thread-cursor","has_older":true},"status":"ok"}`
+	thread := `{"thread":{"thread_id":"` + threadID + `","items":[{"item_id":"` + testItemID + `","user_id":"` + recipientID + `","item_type":"text","text":"private thread text"}],"oldest_cursor":"private-thread-cursor","has_older":true},"status":"ok"}`
 	created := `{"thread":{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `"}]},"status":"ok"}`
 	broadcast := `{"payload":{"item_id":"` + testItemID + `","client_context":"private-context"},"status":"ok"}`
 	createForm := "recipient_users=" + urlEscape(`["`+recipientID+`"]`) + "&_uuid=private-device"
@@ -64,6 +64,26 @@ func writeHAR(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func replaceDirectHARResponse(t *testing.T, content, pathFragment, response string) string {
+	t.Helper()
+	var doc harDocument
+	if err := json.Unmarshal([]byte(content), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for i := range doc.Log.Entries {
+		if strings.Contains(doc.Log.Entries[i].Request.URL, pathFragment) {
+			doc.Log.Entries[i].Response.Content.Text = response
+			raw, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(raw)
+		}
+	}
+	t.Fatalf("HAR contains no request matching %q", pathFragment)
+	return ""
 }
 
 func TestInspectDirectHARCapturesAllContractsWithoutPrivateValues(t *testing.T) {
@@ -99,6 +119,80 @@ func TestInspectDirectHARRejectsUnownedThread(t *testing.T) {
 	_, err := inspectDirectHAR(context.Background(), writeHAR(t, content), testViewerID, testRecipientID, testRecipientID, time.Now)
 	if err == nil || !strings.Contains(err.Error(), "authenticated viewer's inbox") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestInspectDirectHARRejectsIncompleteReadContracts(t *testing.T) {
+	complete := completeDirectHAR(t, testThreadID, testRecipientID)
+	tests := []struct {
+		name         string
+		pathFragment string
+		response     string
+		want         string
+	}{
+		{
+			name:         "inbox object absent despite unrelated thread ID",
+			pathFragment: "/direct_v2/inbox/",
+			response:     `{"metadata":{"thread_id":"` + testThreadID + `"},"status":"ok"}`,
+			want:         "omitted inbox object",
+		},
+		{
+			name:         "thread ID outside empty inbox threads is not ownership proof",
+			pathFragment: "/direct_v2/inbox/",
+			response:     `{"inbox":{"threads":[],"oldest_cursor":"cursor","has_older":true},"metadata":{"thread_id":"` + testThreadID + `"},"status":"ok"}`,
+			want:         "non-empty inbox.threads",
+		},
+		{
+			name:         "inbox pagination absent",
+			pathFragment: "/direct_v2/inbox/",
+			response:     `{"inbox":{"threads":[{"thread_id":"` + testThreadID + `"}]},"status":"ok"}`,
+			want:         "inbox.has_older",
+		},
+		{
+			name:         "inbox continuation not proven",
+			pathFragment: "/direct_v2/inbox/",
+			response:     `{"inbox":{"threads":[{"thread_id":"` + testThreadID + `"}],"oldest_cursor":"cursor","has_older":false},"status":"ok"}`,
+			want:         "did not prove continuation",
+		},
+		{
+			name:         "thread object absent",
+			pathFragment: "/direct_v2/threads/" + testThreadID + "/",
+			response:     `{"status":"ok"}`,
+			want:         "omitted thread object",
+		},
+		{
+			name:         "thread response ID mismatch",
+			pathFragment: "/direct_v2/threads/" + testThreadID + "/",
+			response:     `{"thread":{"thread_id":"999","items":[{"item_id":"1","user_id":"2","item_type":"text"}],"oldest_cursor":"cursor","has_older":true},"status":"ok"}`,
+			want:         "did not match",
+		},
+		{
+			name:         "thread items absent",
+			pathFragment: "/direct_v2/threads/" + testThreadID + "/",
+			response:     `{"thread":{"thread_id":"` + testThreadID + `","oldest_cursor":"cursor","has_older":true},"status":"ok"}`,
+			want:         "non-empty thread.items",
+		},
+		{
+			name:         "thread item shape absent",
+			pathFragment: "/direct_v2/threads/" + testThreadID + "/",
+			response:     `{"thread":{"thread_id":"` + testThreadID + `","items":[{}],"oldest_cursor":"cursor","has_older":true},"status":"ok"}`,
+			want:         "without item_id, user_id, or item_type",
+		},
+		{
+			name:         "thread pagination absent",
+			pathFragment: "/direct_v2/threads/" + testThreadID + "/",
+			response:     `{"thread":{"thread_id":"` + testThreadID + `","items":[{"item_id":"1","user_id":"2","item_type":"text"}]},"status":"ok"}`,
+			want:         "thread.has_older",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := replaceDirectHARResponse(t, complete, tt.pathFragment, tt.response)
+			_, err := inspectDirectHAR(context.Background(), writeHAR(t, content), testViewerID, testRecipientID, testRecipientID, time.Now)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -141,7 +235,7 @@ func TestInspectDirectHARRejects2xxFailureAndBroadcastWithoutItemID(t *testing.T
 		t.Fatalf("2xx status=fail error=%v", err)
 	}
 
-	missingItemID := strings.Replace(complete, testItemID, "", 1)
+	missingItemID := replaceDirectHARResponse(t, complete, "/threads/broadcast/text/", `{"payload":{},"status":"ok"}`)
 	_, err = inspectDirectHAR(context.Background(), writeHAR(t, missingItemID), testViewerID, testRecipientID, testRecipientID, time.Now)
 	if err == nil || !strings.Contains(err.Error(), "payload.item_id") {
 		t.Fatalf("missing item ID error=%v", err)
