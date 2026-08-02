@@ -11,6 +11,8 @@ import (
 
 const accountAdminConfirmation = "RESTORE_BURNER_SETTINGS"
 
+func accountAdminValue[T any](value T) *T { return &value }
+
 func accountAdminBurner(t *testing.T) (*instagram.Client, string) {
 	t.Helper()
 	if os.Getenv("INSTAGRAM_ACCOUNT_ADMIN_LIVE_TEST") != "1" {
@@ -49,12 +51,12 @@ func TestIntegration_AccountAdmin_ProfileRestoresBurner(t *testing.T) {
 	changed := original.Profile
 	changed.Biography += " [instagram-go reversible smoke]"
 	if _, err := c.UpdateProfileFields(ctx, instagram.UpdateProfileFieldsParams{
-		ExpectedAccountID: id, Before: original.Profile, After: changed, Confirm: true,
+		ExpectedAccountID: id, Before: accountAdminValue(original.Profile), After: &changed, Confirm: true,
 	}); err != nil {
 		t.Fatalf("temporary profile mutation: %v", err)
 	}
 	if _, err := c.UpdateProfileFields(ctx, instagram.UpdateProfileFieldsParams{
-		ExpectedAccountID: id, Before: changed, After: original.Profile, Confirm: true,
+		ExpectedAccountID: id, Before: &changed, After: accountAdminValue(original.Profile), Confirm: true,
 	}); err != nil {
 		t.Fatalf("restore profile: %v", err)
 	}
@@ -74,12 +76,12 @@ func TestIntegration_AccountAdmin_PrivacyRestoresBurner(t *testing.T) {
 
 	changed := !original.IsPrivate
 	if _, err := c.SetPrivacy(ctx, instagram.SetPrivacyParams{
-		ExpectedAccountID: id, Before: original.IsPrivate, After: changed, Confirm: true,
+		ExpectedAccountID: id, Before: accountAdminValue(original.IsPrivate), After: &changed, Confirm: true,
 	}); err != nil {
 		t.Fatalf("temporary privacy mutation: %v", err)
 	}
 	if _, err := c.SetPrivacy(ctx, instagram.SetPrivacyParams{
-		ExpectedAccountID: id, Before: changed, After: original.IsPrivate, Confirm: true,
+		ExpectedAccountID: id, Before: &changed, After: accountAdminValue(original.IsPrivate), Confirm: true,
 	}); err != nil {
 		t.Fatalf("restore privacy: %v", err)
 	}
@@ -103,12 +105,12 @@ func TestIntegration_AccountAdmin_ProfessionalDisplayRestoresBurner(t *testing.T
 	changed := original.Settings
 	changed.DisplayCategory = !changed.DisplayCategory
 	if _, err := c.UpdateProfessionalSettings(ctx, instagram.UpdateProfessionalSettingsParams{
-		ExpectedAccountID: id, Before: original.Settings, After: changed, Confirm: true,
+		ExpectedAccountID: id, Before: accountAdminValue(original.Settings), After: &changed, Confirm: true,
 	}); err != nil {
 		t.Fatalf("temporary professional mutation: %v", err)
 	}
 	if _, err := c.UpdateProfessionalSettings(ctx, instagram.UpdateProfessionalSettingsParams{
-		ExpectedAccountID: id, Before: changed, After: original.Settings, Confirm: true,
+		ExpectedAccountID: id, Before: &changed, After: accountAdminValue(original.Settings), Confirm: true,
 	}); err != nil {
 		t.Fatalf("restore professional settings: %v", err)
 	}
@@ -131,7 +133,7 @@ func restoreProfileCleanup(t *testing.T, c *instagram.Client, id string, origina
 			return
 		}
 		if current.Profile != original {
-			if _, err := c.UpdateProfileFields(ctx, instagram.UpdateProfileFieldsParams{ExpectedAccountID: id, Before: current.Profile, After: original, Confirm: true}); err != nil {
+			if _, err := c.UpdateProfileFields(ctx, instagram.UpdateProfileFieldsParams{ExpectedAccountID: id, Before: accountAdminValue(current.Profile), After: &original, Confirm: true}); err != nil {
 				t.Errorf("cleanup restore profile: %v", err)
 				return
 			}
@@ -154,7 +156,7 @@ func restorePrivacyCleanup(t *testing.T, c *instagram.Client, id string, origina
 			return
 		}
 		if current.IsPrivate != original {
-			if _, err := c.SetPrivacy(ctx, instagram.SetPrivacyParams{ExpectedAccountID: id, Before: current.IsPrivate, After: original, Confirm: true}); err != nil {
+			if _, err := c.SetPrivacy(ctx, instagram.SetPrivacyParams{ExpectedAccountID: id, Before: accountAdminValue(current.IsPrivate), After: &original, Confirm: true}); err != nil {
 				t.Errorf("cleanup restore privacy: %v", err)
 				return
 			}
@@ -177,7 +179,7 @@ func restoreProfessionalCleanup(t *testing.T, c *instagram.Client, id string, or
 			return
 		}
 		if current.Settings != original {
-			if _, err := c.UpdateProfessionalSettings(ctx, instagram.UpdateProfessionalSettingsParams{ExpectedAccountID: id, Before: current.Settings, After: original, Confirm: true}); err != nil {
+			if _, err := c.UpdateProfessionalSettings(ctx, instagram.UpdateProfessionalSettingsParams{ExpectedAccountID: id, Before: accountAdminValue(current.Settings), After: &original, Confirm: true}); err != nil {
 				t.Errorf("cleanup restore professional settings: %v", err)
 				return
 			}

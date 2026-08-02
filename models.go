@@ -298,26 +298,26 @@ type ProfessionalAccountState struct {
 // UpdateProfileFieldsParams requires a complete before/after pair and an
 // explicit confirmation. ExpectedAccountID binds the operation to one account.
 type UpdateProfileFieldsParams struct {
-	ExpectedAccountID string        `json:"expected_account_id" jsonschema:"required"`
-	Before            ProfileFields `json:"before" jsonschema:"required"`
-	After             ProfileFields `json:"after" jsonschema:"required"`
-	Confirm           bool          `json:"confirm" jsonschema:"required"`
+	ExpectedAccountID string         `json:"expected_account_id" jsonschema:"required"`
+	Before            *ProfileFields `json:"before" jsonschema:"required"`
+	After             *ProfileFields `json:"after" jsonschema:"required"`
+	Confirm           bool           `json:"confirm" jsonschema:"required"`
 }
 
 // SetPrivacyParams guards one public/private transition.
 type SetPrivacyParams struct {
 	ExpectedAccountID string `json:"expected_account_id" jsonschema:"required"`
-	Before            bool   `json:"before" jsonschema:"required"`
-	After             bool   `json:"after" jsonschema:"required"`
+	Before            *bool  `json:"before" jsonschema:"required"`
+	After             *bool  `json:"after" jsonschema:"required"`
 	Confirm           bool   `json:"confirm" jsonschema:"required"`
 }
 
 // UpdateProfessionalSettingsParams guards reversible display-only settings.
 type UpdateProfessionalSettingsParams struct {
-	ExpectedAccountID string               `json:"expected_account_id" jsonschema:"required"`
-	Before            ProfessionalSettings `json:"before" jsonschema:"required"`
-	After             ProfessionalSettings `json:"after" jsonschema:"required"`
-	Confirm           bool                 `json:"confirm" jsonschema:"required"`
+	ExpectedAccountID string                `json:"expected_account_id" jsonschema:"required"`
+	Before            *ProfessionalSettings `json:"before" jsonschema:"required"`
+	After             *ProfessionalSettings `json:"after" jsonschema:"required"`
+	Confirm           bool                  `json:"confirm" jsonschema:"required"`
 }
 
 // AccountMutationResult records the verified state transition.

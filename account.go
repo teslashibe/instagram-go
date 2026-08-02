@@ -212,10 +212,10 @@ func requiredAccountScalarString(fields map[string]json.RawMessage, name string)
 
 // UpdateProfileFields changes only full name, biography, and external URL.
 func (c *Client) UpdateProfileFields(ctx context.Context, p UpdateProfileFieldsParams) (*AccountMutationResult[ProfileFields], error) {
-	if err := validateMutationHeader(p.ExpectedAccountID, p.Confirm); err != nil {
+	if err := validateMutationHeader(p.ExpectedAccountID, p.Confirm, p.Before != nil, p.After != nil); err != nil {
 		return nil, err
 	}
-	if p.Before == p.After {
+	if *p.Before == *p.After {
 		return nil, precondition("profile", "before and after values are identical")
 	}
 	c.accountMutationMu.Lock()
@@ -227,7 +227,7 @@ func (c *Client) UpdateProfileFields(ctx context.Context, p UpdateProfileFieldsP
 	if err := c.requireAccountID(p.ExpectedAccountID, current.AccountID); err != nil {
 		return nil, err
 	}
-	if current.Profile != p.Before {
+	if current.Profile != *p.Before {
 		return nil, precondition("profile", "before value does not match current state")
 	}
 	form := url.Values{
@@ -245,18 +245,18 @@ func (c *Client) UpdateProfileFields(ctx context.Context, p UpdateProfileFieldsP
 	if err := c.requireAccountID(p.ExpectedAccountID, verified.AccountID); err != nil {
 		return nil, err
 	}
-	if verified.Profile != p.After {
+	if verified.Profile != *p.After {
 		return nil, precondition("profile", "post-write state did not match after value")
 	}
-	return &AccountMutationResult[ProfileFields]{AccountID: verified.AccountID, Before: p.Before, After: p.After, Verified: true}, nil
+	return &AccountMutationResult[ProfileFields]{AccountID: verified.AccountID, Before: *p.Before, After: *p.After, Verified: true}, nil
 }
 
 // SetPrivacy changes only the account's public/private state.
 func (c *Client) SetPrivacy(ctx context.Context, p SetPrivacyParams) (*AccountMutationResult[bool], error) {
-	if err := validateMutationHeader(p.ExpectedAccountID, p.Confirm); err != nil {
+	if err := validateMutationHeader(p.ExpectedAccountID, p.Confirm, p.Before != nil, p.After != nil); err != nil {
 		return nil, err
 	}
-	if p.Before == p.After {
+	if *p.Before == *p.After {
 		return nil, precondition("privacy", "before and after values are identical")
 	}
 	c.accountMutationMu.Lock()
@@ -268,11 +268,11 @@ func (c *Client) SetPrivacy(ctx context.Context, p SetPrivacyParams) (*AccountMu
 	if err := c.requireAccountID(p.ExpectedAccountID, current.AccountID); err != nil {
 		return nil, err
 	}
-	if current.IsPrivate != p.Before {
+	if current.IsPrivate != *p.Before {
 		return nil, precondition("privacy", "before value does not match current state")
 	}
 	path := "/api/v1/accounts/set_public/"
-	if p.After {
+	if *p.After {
 		path = "/api/v1/accounts/set_private/"
 	}
 	if err := c.accountWrite(ctx, path, url.Values{}); err != nil {
@@ -285,19 +285,19 @@ func (c *Client) SetPrivacy(ctx context.Context, p SetPrivacyParams) (*AccountMu
 	if err := c.requireAccountID(p.ExpectedAccountID, verified.AccountID); err != nil {
 		return nil, err
 	}
-	if verified.IsPrivate != p.After {
+	if verified.IsPrivate != *p.After {
 		return nil, precondition("privacy", "post-write state did not match after value")
 	}
-	return &AccountMutationResult[bool]{AccountID: verified.AccountID, Before: p.Before, After: p.After, Verified: true}, nil
+	return &AccountMutationResult[bool]{AccountID: verified.AccountID, Before: *p.Before, After: *p.After, Verified: true}, nil
 }
 
 // UpdateProfessionalSettings changes only category ID and category visibility
 // on an existing professional account. It cannot convert account type.
 func (c *Client) UpdateProfessionalSettings(ctx context.Context, p UpdateProfessionalSettingsParams) (*AccountMutationResult[ProfessionalSettings], error) {
-	if err := validateMutationHeader(p.ExpectedAccountID, p.Confirm); err != nil {
+	if err := validateMutationHeader(p.ExpectedAccountID, p.Confirm, p.Before != nil, p.After != nil); err != nil {
 		return nil, err
 	}
-	if p.Before == p.After {
+	if *p.Before == *p.After {
 		return nil, precondition("professional_settings", "before and after values are identical")
 	}
 	c.accountMutationMu.Lock()
@@ -312,7 +312,7 @@ func (c *Client) UpdateProfessionalSettings(ctx context.Context, p UpdateProfess
 	if !current.IsProfessional {
 		return nil, precondition("professional_settings", "account is not already professional")
 	}
-	if current.Settings != p.Before {
+	if current.Settings != *p.Before {
 		return nil, precondition("professional_settings", "before value does not match current state")
 	}
 	form := url.Values{
@@ -329,10 +329,10 @@ func (c *Client) UpdateProfessionalSettings(ctx context.Context, p UpdateProfess
 	if err := c.requireAccountID(p.ExpectedAccountID, verified.AccountID); err != nil {
 		return nil, err
 	}
-	if verified.Settings != p.After {
+	if verified.Settings != *p.After {
 		return nil, precondition("professional_settings", "post-write state did not match after value")
 	}
-	return &AccountMutationResult[ProfessionalSettings]{AccountID: verified.AccountID, Before: p.Before, After: p.After, Verified: true}, nil
+	return &AccountMutationResult[ProfessionalSettings]{AccountID: verified.AccountID, Before: *p.Before, After: *p.After, Verified: true}, nil
 }
 
 func (c *Client) accountWrite(ctx context.Context, path string, form url.Values) error {
@@ -341,12 +341,18 @@ func (c *Client) accountWrite(ctx context.Context, path string, form url.Values)
 	}, nil)
 }
 
-func validateMutationHeader(expectedID string, confirmed bool) error {
+func validateMutationHeader(expectedID string, confirmed, beforePresent, afterPresent bool) error {
 	if expectedID == "" {
 		return precondition("expected_account_id", "is required")
 	}
 	if !confirmed {
 		return precondition("confirm", "explicit confirmation is required")
+	}
+	if !beforePresent {
+		return precondition("before", "explicit before value is required")
+	}
+	if !afterPresent {
+		return precondition("after", "explicit after value is required")
 	}
 	return nil
 }

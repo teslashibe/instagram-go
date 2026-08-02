@@ -108,6 +108,61 @@ func TestAccountAdministrationToolsReturnStructuredSafetyErrors(t *testing.T) {
 	}
 }
 
+func TestAccountAdministrationToolsRejectOmittedTransitionsWithoutHTTP(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+		body string
+		want string
+	}{
+		{
+			name: "profile before", tool: "instagram_update_profile_fields", want: "before",
+			body: `{"expected_account_id":"viewer","after":{"full_name":"Name","biography":"Bio","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "profile after", tool: "instagram_update_profile_fields", want: "after",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Bio","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "privacy before", tool: "instagram_set_privacy", want: "before",
+			body: `{"expected_account_id":"viewer","after":false,"confirm":true}`,
+		},
+		{
+			name: "privacy after", tool: "instagram_set_privacy", want: "after",
+			body: `{"expected_account_id":"viewer","before":false,"confirm":true}`,
+		},
+		{
+			name: "professional before", tool: "instagram_update_professional_settings", want: "before",
+			body: `{"expected_account_id":"viewer","after":{"category_id":"1001","display_category":false},"confirm":true}`,
+		},
+		{
+			name: "professional after", tool: "instagram_update_professional_settings", want: "after",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":false},"confirm":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return mcpJSONResponse(req, http.StatusOK, `{}`), nil
+			})
+			_, err := findTool(t, tt.tool).Invoke(context.Background(), client, json.RawMessage(tt.body))
+			var toolErr *mcptool.Error
+			if !errors.As(err, &toolErr) || toolErr.Code != "precondition_failed" || toolErr.Retryable {
+				t.Fatalf("error = %#v", err)
+			}
+			if got := toolErr.Data["field"]; got != tt.want {
+				t.Fatalf("precondition field = %#v, want %q", got, tt.want)
+			}
+			if requests != 0 {
+				t.Fatalf("omitted transition made %d HTTP requests", requests)
+			}
+		})
+	}
+}
+
 func TestAccountAdministrationReadToolsReturnStructuredIdentityErrors(t *testing.T) {
 	tests := []struct {
 		name, body, code string

@@ -15,6 +15,8 @@ import (
 
 const accountFixtureID = "1234567890123456789"
 
+func accountValue[T any](value T) *T { return &value }
+
 type accountRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f accountRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
@@ -204,19 +206,27 @@ func TestAccountMutationsRejectLocallyWithoutHTTP(t *testing.T) {
 		call func() error
 	}{
 		{name: "missing confirmation", call: func() error {
-			_, err := c.UpdateProfileFields(context.Background(), UpdateProfileFieldsParams{ExpectedAccountID: accountFixtureID, Before: profile, After: ProfileFields{FullName: "Other"}})
+			_, err := c.UpdateProfileFields(context.Background(), UpdateProfileFieldsParams{ExpectedAccountID: accountFixtureID, Before: accountValue(profile), After: accountValue(ProfileFields{FullName: "Other"})})
 			return err
 		}},
 		{name: "missing account id", call: func() error {
-			_, err := c.SetPrivacy(context.Background(), SetPrivacyParams{Before: true, After: false, Confirm: true})
+			_, err := c.SetPrivacy(context.Background(), SetPrivacyParams{Before: accountValue(true), After: accountValue(false), Confirm: true})
+			return err
+		}},
+		{name: "missing before", call: func() error {
+			_, err := c.SetPrivacy(context.Background(), SetPrivacyParams{ExpectedAccountID: accountFixtureID, After: accountValue(false), Confirm: true})
+			return err
+		}},
+		{name: "missing after", call: func() error {
+			_, err := c.SetPrivacy(context.Background(), SetPrivacyParams{ExpectedAccountID: accountFixtureID, Before: accountValue(true), Confirm: true})
 			return err
 		}},
 		{name: "profile no-op", call: func() error {
-			_, err := c.UpdateProfileFields(context.Background(), UpdateProfileFieldsParams{ExpectedAccountID: accountFixtureID, Before: profile, After: profile, Confirm: true})
+			_, err := c.UpdateProfileFields(context.Background(), UpdateProfileFieldsParams{ExpectedAccountID: accountFixtureID, Before: accountValue(profile), After: accountValue(profile), Confirm: true})
 			return err
 		}},
 		{name: "privacy no-op", call: func() error {
-			_, err := c.SetPrivacy(context.Background(), SetPrivacyParams{ExpectedAccountID: accountFixtureID, Before: true, After: true, Confirm: true})
+			_, err := c.SetPrivacy(context.Background(), SetPrivacyParams{ExpectedAccountID: accountFixtureID, Before: accountValue(true), After: accountValue(true), Confirm: true})
 			return err
 		}},
 	}
@@ -267,7 +277,7 @@ func TestUpdateProfileFieldsUsesAllowlistAndVerifies(t *testing.T) {
 	after := before
 	after.Biography = "changed biography"
 	result, err := c.UpdateProfileFields(context.Background(), UpdateProfileFieldsParams{
-		ExpectedAccountID: accountFixtureID, Before: before, After: after, Confirm: true,
+		ExpectedAccountID: accountFixtureID, Before: &before, After: &after, Confirm: true,
 	})
 	if err != nil || result == nil || !result.Verified || writes != 1 || requests != 3 {
 		t.Fatalf("result=%#v err=%v requests=%d writes=%d", result, err, requests, writes)
@@ -287,7 +297,7 @@ func TestAccountWritesAreSingleAttemptAndCooldownIsBounded(t *testing.T) {
 		return resp, nil
 	})
 	_, err := c.SetPrivacy(context.Background(), SetPrivacyParams{
-		ExpectedAccountID: accountFixtureID, Before: true, After: false, Confirm: true,
+		ExpectedAccountID: accountFixtureID, Before: accountValue(true), After: accountValue(false), Confirm: true,
 	})
 	if !errors.Is(err, ErrRateLimited) || writes != 1 {
 		t.Fatalf("error=%v writes=%d", err, writes)
@@ -320,8 +330,8 @@ func TestProfessionalSettingsRequireExistingProfessionalAccount(t *testing.T) {
 	})
 	_, err := c.UpdateProfessionalSettings(context.Background(), UpdateProfessionalSettingsParams{
 		ExpectedAccountID: accountFixtureID,
-		Before:            ProfessionalSettings{CategoryID: "1001", DisplayCategory: true},
-		After:             ProfessionalSettings{CategoryID: "1001", DisplayCategory: false}, Confirm: true,
+		Before:            accountValue(ProfessionalSettings{CategoryID: "1001", DisplayCategory: true}),
+		After:             accountValue(ProfessionalSettings{CategoryID: "1001", DisplayCategory: false}), Confirm: true,
 	})
 	if !errors.Is(err, ErrMutationPrecondition) {
 		t.Fatalf("error = %v", err)
@@ -352,7 +362,7 @@ func TestScopedPrivacyAndProfessionalWritesVerifyAllowlistedState(t *testing.T) 
 			}
 		})
 		result, err := c.SetPrivacy(context.Background(), SetPrivacyParams{
-			ExpectedAccountID: accountFixtureID, Before: true, After: false, Confirm: true,
+			ExpectedAccountID: accountFixtureID, Before: accountValue(true), After: accountValue(false), Confirm: true,
 		})
 		if err != nil || !result.Verified || request != 3 {
 			t.Fatalf("result=%#v err=%v requests=%d", result, err, request)
@@ -385,7 +395,7 @@ func TestScopedPrivacyAndProfessionalWritesVerifyAllowlistedState(t *testing.T) 
 		before := ProfessionalSettings{CategoryID: "1001", DisplayCategory: true}
 		after := ProfessionalSettings{CategoryID: "1001", DisplayCategory: false}
 		result, err := c.UpdateProfessionalSettings(context.Background(), UpdateProfessionalSettingsParams{
-			ExpectedAccountID: accountFixtureID, Before: before, After: after, Confirm: true,
+			ExpectedAccountID: accountFixtureID, Before: &before, After: &after, Confirm: true,
 		})
 		if err != nil || !result.Verified || request != 3 {
 			t.Fatalf("result=%#v err=%v requests=%d", result, err, request)
@@ -430,7 +440,7 @@ func TestAccountMutationsSerializeCompleteTransactions(t *testing.T) {
 	})
 
 	params := SetPrivacyParams{
-		ExpectedAccountID: accountFixtureID, Before: true, After: false, Confirm: true,
+		ExpectedAccountID: accountFixtureID, Before: accountValue(true), After: accountValue(false), Confirm: true,
 	}
 	results := make(chan error, 2)
 	go func() {

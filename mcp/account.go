@@ -34,13 +34,16 @@ func getProfessionalAccountState(ctx context.Context, c *instagram.Client, _ Get
 
 // UpdateProfileFieldsInput has no contact, credential, or security fields.
 type UpdateProfileFieldsInput struct {
-	ExpectedAccountID string                  `json:"expected_account_id" jsonschema:"description=numeric ID of the authenticated account expected to change,required"`
-	Before            instagram.ProfileFields `json:"before" jsonschema:"description=complete profile state expected before the write,required"`
-	After             instagram.ProfileFields `json:"after" jsonschema:"description=complete profile state required after the write,required"`
-	Confirm           bool                    `json:"confirm" jsonschema:"description=explicit confirmation of this exact before-to-after mutation,required"`
+	ExpectedAccountID string                   `json:"expected_account_id" jsonschema:"description=numeric ID of the authenticated account expected to change,required"`
+	Before            *instagram.ProfileFields `json:"before" jsonschema:"description=complete profile state expected before the write,required"`
+	After             *instagram.ProfileFields `json:"after" jsonschema:"description=complete profile state required after the write,required"`
+	Confirm           bool                     `json:"confirm" jsonschema:"description=explicit confirmation of this exact before-to-after mutation,required"`
 }
 
 func updateProfileFields(ctx context.Context, c *instagram.Client, in UpdateProfileFieldsInput) (any, error) {
+	if err := requireMutationTransition(c, in.Before != nil, in.After != nil); err != nil {
+		return nil, err
+	}
 	result, err := c.UpdateProfileFields(ctx, instagram.UpdateProfileFieldsParams{
 		ExpectedAccountID: in.ExpectedAccountID, Before: in.Before, After: in.After, Confirm: in.Confirm,
 	})
@@ -50,12 +53,15 @@ func updateProfileFields(ctx context.Context, c *instagram.Client, in UpdateProf
 // SetPrivacyInput guards one explicit public/private transition.
 type SetPrivacyInput struct {
 	ExpectedAccountID string `json:"expected_account_id" jsonschema:"description=numeric ID of the authenticated account expected to change,required"`
-	Before            bool   `json:"before" jsonschema:"description=privacy state expected before the write,required"`
-	After             bool   `json:"after" jsonschema:"description=privacy state required after the write,required"`
+	Before            *bool  `json:"before" jsonschema:"description=privacy state expected before the write,required"`
+	After             *bool  `json:"after" jsonschema:"description=privacy state required after the write,required"`
 	Confirm           bool   `json:"confirm" jsonschema:"description=explicit confirmation of this exact before-to-after mutation,required"`
 }
 
 func setPrivacy(ctx context.Context, c *instagram.Client, in SetPrivacyInput) (any, error) {
+	if err := requireMutationTransition(c, in.Before != nil, in.After != nil); err != nil {
+		return nil, err
+	}
 	result, err := c.SetPrivacy(ctx, instagram.SetPrivacyParams{
 		ExpectedAccountID: in.ExpectedAccountID, Before: in.Before, After: in.After, Confirm: in.Confirm,
 	})
@@ -65,17 +71,30 @@ func setPrivacy(ctx context.Context, c *instagram.Client, in SetPrivacyInput) (a
 // UpdateProfessionalSettingsInput permits display settings only; it cannot
 // convert an account or alter public contact, ownership, or security data.
 type UpdateProfessionalSettingsInput struct {
-	ExpectedAccountID string                         `json:"expected_account_id" jsonschema:"description=numeric ID of the authenticated account expected to change,required"`
-	Before            instagram.ProfessionalSettings `json:"before" jsonschema:"description=complete professional display state expected before the write,required"`
-	After             instagram.ProfessionalSettings `json:"after" jsonschema:"description=complete professional display state required after the write,required"`
-	Confirm           bool                           `json:"confirm" jsonschema:"description=explicit confirmation of this exact before-to-after mutation,required"`
+	ExpectedAccountID string                          `json:"expected_account_id" jsonschema:"description=numeric ID of the authenticated account expected to change,required"`
+	Before            *instagram.ProfessionalSettings `json:"before" jsonschema:"description=complete professional display state expected before the write,required"`
+	After             *instagram.ProfessionalSettings `json:"after" jsonschema:"description=complete professional display state required after the write,required"`
+	Confirm           bool                            `json:"confirm" jsonschema:"description=explicit confirmation of this exact before-to-after mutation,required"`
 }
 
 func updateProfessionalSettings(ctx context.Context, c *instagram.Client, in UpdateProfessionalSettingsInput) (any, error) {
+	if err := requireMutationTransition(c, in.Before != nil, in.After != nil); err != nil {
+		return nil, err
+	}
 	result, err := c.UpdateProfessionalSettings(ctx, instagram.UpdateProfessionalSettingsParams{
 		ExpectedAccountID: in.ExpectedAccountID, Before: in.Before, After: in.After, Confirm: in.Confirm,
 	})
 	return result, accountToolError(c, err)
+}
+
+func requireMutationTransition(c *instagram.Client, beforePresent, afterPresent bool) error {
+	if !beforePresent {
+		return accountToolError(c, &instagram.MutationPreconditionError{Field: "before", Reason: "explicit before value is required"})
+	}
+	if !afterPresent {
+		return accountToolError(c, &instagram.MutationPreconditionError{Field: "after", Reason: "explicit after value is required"})
+	}
+	return nil
 }
 
 func accountToolError(c *instagram.Client, err error) error {
