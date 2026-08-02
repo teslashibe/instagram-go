@@ -43,10 +43,47 @@ var (
 	// ErrCSRF is returned when Instagram rejects a write with a CSRF error.
 	ErrCSRF = errors.New("instagram: csrf token rejected")
 
+	// ErrAccountMismatch is returned when an authenticated account response or
+	// mutation target does not match the ds_user_id bound to this client.
+	ErrAccountMismatch = errors.New("instagram: authenticated account mismatch")
+
+	// ErrMutationPrecondition is returned when an account administration write
+	// is unconfirmed, is a no-op, or its explicit Before value is stale.
+	ErrMutationPrecondition = errors.New("instagram: mutation precondition failed")
+
 	// ErrUnexpectedResponse is returned when the response is well-formed but
 	// does not contain the expected fields. The wrapped error gives detail.
 	ErrUnexpectedResponse = errors.New("instagram: unexpected response")
 )
+
+// AccountMismatchError identifies the expected and observed account IDs
+// without exposing credentials or response bodies.
+type AccountMismatchError struct {
+	ExpectedAccountID string
+	ActualAccountID   string
+}
+
+func (e *AccountMismatchError) Error() string {
+	return fmt.Sprintf("%s: expected account %q, got %q", ErrAccountMismatch, e.ExpectedAccountID, e.ActualAccountID)
+}
+
+func (e *AccountMismatchError) Unwrap() error { return ErrAccountMismatch }
+
+// MutationPreconditionError describes a locally rejected administration
+// mutation. Field is an allowlisted field name and never contains a secret.
+type MutationPreconditionError struct {
+	Field  string
+	Reason string
+}
+
+func (e *MutationPreconditionError) Error() string {
+	if e.Field == "" {
+		return fmt.Sprintf("%s: %s", ErrMutationPrecondition, e.Reason)
+	}
+	return fmt.Sprintf("%s: %s: %s", ErrMutationPrecondition, e.Field, e.Reason)
+}
+
+func (e *MutationPreconditionError) Unwrap() error { return ErrMutationPrecondition }
 
 // APIError carries the raw status code and body from a non-2xx response.
 type APIError struct {
