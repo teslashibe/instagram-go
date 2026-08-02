@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -553,6 +554,69 @@ func TestIntegration_KeywordTypeahead(t *testing.T) {
 	} else {
 		t.Logf("PASS: KeywordTypeahead returned %d suggestions (first=%q)", len(suggestions), suggestions[0])
 	}
+	logRate(t, c)
+}
+
+func TestIntegration_DirectReadSelfOwnedThread(t *testing.T) {
+	if os.Getenv("IG_DIRECT_LIVE_TEST") != "1" {
+		t.Skip("set IG_DIRECT_LIVE_TEST=1 to read one thread selected from the authenticated burner inbox")
+	}
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	inbox := c.GetDirectInbox().WithMaxPages(1)
+	if !inbox.Next(ctx) {
+		t.Fatalf("authenticated inbox has no thread to verify: %v", inbox.Err())
+	}
+	selected := inbox.Item()
+	if selected == nil || selected.ID == "" {
+		t.Fatal("authenticated inbox returned a thread without an ID")
+	}
+	items := c.GetDirectThread(selected.ID).WithMaxPages(1)
+	count := 0
+	for items.Next(ctx) {
+		count++
+	}
+	if err := items.Err(); err != nil {
+		t.Fatalf("read selected self-owned thread: %v", err)
+	}
+	t.Logf("PASS: read %d items from one thread selected only from the authenticated inbox", count)
+	logRate(t, c)
+}
+
+func TestIntegration_DirectSendApprovedBurnerOrSelf(t *testing.T) {
+	if os.Getenv("IG_DIRECT_WRITE_TEST") != "1" {
+		t.Skip("set IG_DIRECT_WRITE_TEST=1 only after approving a burner/self recipient")
+	}
+	approved := strings.TrimSpace(os.Getenv("IG_DIRECT_APPROVED_RECIPIENT_ID"))
+	confirmed := strings.TrimSpace(os.Getenv("IG_DIRECT_CONFIRM_RECIPIENT_ID"))
+	message := strings.TrimSpace(os.Getenv("IG_DIRECT_TEST_MESSAGE"))
+	if approved == "" || approved != confirmed {
+		t.Fatal("IG_DIRECT_APPROVED_RECIPIENT_ID and IG_DIRECT_CONFIRM_RECIPIENT_ID must be non-empty and identical")
+	}
+	if message == "" {
+		t.Fatal("IG_DIRECT_TEST_MESSAGE must contain the explicitly approved plain-text test message")
+	}
+	c := newClient(t)
+	me, err := c.Me(context.Background())
+	if err != nil {
+		t.Fatalf("Me: %v", err)
+	}
+	if approved != me.ID {
+		if os.Getenv("IG_DIRECT_TARGET_KIND") != "burner" || os.Getenv("IG_DIRECT_BURNER_TARGET_CONFIRM") != "I_CONFIRM_THIS_IS_A_BURNER" {
+			t.Fatal("non-self writes require IG_DIRECT_TARGET_KIND=burner and IG_DIRECT_BURNER_TARGET_CONFIRM=I_CONFIRM_THIS_IS_A_BURNER")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{RecipientID: approved, Text: message})
+	if err != nil {
+		t.Fatalf("SendDirectText: %v", err)
+	}
+	if result.ThreadID == "" || result.ClientContext == "" {
+		t.Fatal("send result omitted thread or client context")
+	}
+	t.Log("PASS: sent one confirmed text item to the explicitly approved burner/self target")
 	logRate(t, c)
 }
 

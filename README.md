@@ -22,6 +22,7 @@ import "github.com/teslashibe/instagram-go"
 | Hashtags             | ✅   | ✅    | ✅ (read)   |
 | Locations            | ✅   | —     | ✅          |
 | Keyword discovery    | ✅   | —     | ✅          |
+| Direct messages      | ✅   | ✅ (text only) | gated burner/self |
 | Topical explore      | ✅   | —     | (offline)   |
 | Home timeline        | ✅   | —     | (offline)   |
 
@@ -382,6 +383,52 @@ captured contract and burner-only verification protocol are documented in
 | `GetLocationPosts(id)` (iterator)     | `POST /api/v1/locations/{id}/sections/` `tab=recent`    |
 | `GetLocationTopPosts(id)` (iterator)  | `POST /api/v1/locations/{id}/sections/` `tab=ranked`    |
 
+### Instagram Direct
+
+Direct uses the captured mobile `i.instagram.com` request profile. Inbox and
+thread cursors are versioned opaque values; thread-item cursors are bound to the
+selected thread ID and cross-thread replay fails before HTTP.
+
+| Method | Endpoint |
+|---|---|
+| `GetDirectInbox()` (iterator) | `GET /api/v1/direct_v2/inbox/` |
+| `GetDirectThread(threadID)` (iterator) | `GET /api/v1/direct_v2/threads/{thread_id}/` |
+| `SendDirectText(ctx, request)` | `POST /api/v1/direct_v2/create_group_thread/`, then `POST /api/v1/direct_v2/threads/broadcast/text/` |
+
+`SendDirectText` accepts exactly one explicit numeric `RecipientID` and
+non-whitespace text. It creates a cryptographically random `ClientContext` when
+one is not supplied, uses the same value for the mutation token and every
+broadcast retry, and returns it for reconciliation after an uncertain outcome.
+The whole write is bounded to 30 seconds. Thread creation is not automatically
+retried because its idempotency contract has not been proven. If broadcast
+returns an uncertain outcome, retry with `ThreadID`, `ClientContext`, and
+`RetryToken` from `DirectSendError`; this skips thread creation and repeats only
+the idempotent broadcast. The authenticated token binds the resolved thread to
+the explicit recipient and original text, so substituted targets fail before
+HTTP.
+
+```go
+result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{
+    RecipientID: "123456789", // explicitly approved burner/self ID
+    Text:        "hello from the burner acceptance test",
+})
+
+var sendErr *instagram.DirectSendError
+if errors.As(err, &sendErr) && sendErr.ThreadID != "" {
+    result, err = c.SendDirectText(ctx, instagram.DirectTextRequest{
+        RecipientID:   "123456789",
+        Text:          "hello from the burner acceptance test",
+        ThreadID:      sendErr.ThreadID,
+        ClientContext: sendErr.ClientContext,
+        RetryToken:    sendErr.RetryToken,
+    })
+}
+```
+
+Only plain text is supported. Attachments, reactions, vanish mode, and group
+administration remain unsupported until their request and safety contracts are
+captured separately. See the [Direct contract inventory](docs/inventory/direct.md).
+
 ### Write actions
 
 All writes are subject to a stricter rate-limit budget than reads. They share a 12 s
@@ -395,6 +442,7 @@ soft-block. See [Rate limiting](#rate-limiting).
 | Friendship      | `Follow`, `Unfollow`, `Block`, `Unblock`, `MutePosts`, `UnmutePosts`                   |
 | Hashtags        | `FollowHashtag`, `UnfollowHashtag`                                                     |
 | Stories         | `MarkStorySeen`                                                                        |
+| Direct          | `SendDirectText` (one explicit recipient; plain text only)                             |
 
 ## Pagination
 
@@ -558,10 +606,22 @@ test names are listed in the account-administration inventory document.
 This package ships an [MCP](https://modelcontextprotocol.io/) tool surface in
 `./mcp` for use with [`teslashibe/mcptool`](https://github.com/teslashibe/mcptool)-compatible
 hosts (e.g. [`teslashibe/agent-setup`](https://github.com/teslashibe/agent-setup)).
-58 tools cover the full client API: profile lookup and search, safe account administration, post/reel/timeline/explore
+61 tools cover the full client API: profile lookup and search, safe account
+administration, post/reel/timeline/explore
 feeds, comments and likes, followers/following and friendship reads + writes
 (follow/unfollow/block/mute), hashtag and location reads + follow/unfollow,
-stories and highlights, blended top-search, and keyword post/reel search.
+stories and highlights, blended top-search, keyword post/reel search, and
+Direct inbox/thread reads plus a separately tagged confirmed text write.
+
+The Direct MCP tools are `instagram_get_direct_inbox`,
+`instagram_get_direct_thread`, and `instagram_send_direct_text`. The send tool
+alone is tagged `write` and requires `recipient_id`, non-empty `text`, and
+`confirm_send=true`; hosts can therefore put mutation confirmation around it
+without classifying the read tools as writes. Direct auth, challenge, rate
+limit, CSRF, timeout, and incomplete-send failures are returned as structured
+tool errors. An uncertain broadcast returns `thread_id`, `client_context`, and
+an authenticated `retry_token`; supplying all three on the next confirmed call
+retries only the broadcast after verifying the recipient and text binding.
 
 ```go
 import (

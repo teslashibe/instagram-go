@@ -283,6 +283,7 @@ func newMCPClient(t *testing.T, fn mcpRoundTripFunc) *instagram.Client {
 		instagram.WithHTTPClient(&http.Client{Transport: fn}),
 		instagram.WithSkipSessionValidation(),
 		instagram.WithMinRequestGap(0),
+		instagram.WithMinWriteGap(0),
 		instagram.WithRetry(1, 0),
 	)
 	if err != nil {

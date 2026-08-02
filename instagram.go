@@ -1,9 +1,10 @@
 // Package instagram provides a Go client for Instagram's private web/mobile API.
 //
 // It supports authenticated profile lookup, post and reel feeds, comments,
-// followers/following, stories, hashtags, locations, search, and narrowly
-// scoped account administration — giving programmatic access to Instagram's
-// content graph and safe reversible settings from a logged-in browser session.
+// followers/following, stories, hashtags, locations, search, narrowly scoped
+// account administration, and explicitly confirmed plain-text Instagram Direct
+// messaging — giving programmatic access to Instagram's content graph and safe
+// reversible settings from a logged-in browser session.
 //
 // Zero production dependencies — stdlib only.
 //

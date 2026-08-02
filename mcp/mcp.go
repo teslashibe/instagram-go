@@ -47,6 +47,7 @@ func (Provider) Tools() []mcptool.Tool {
 			len(locationTools)+
 			len(storyTools)+
 			len(searchTools)+
+			len(directTools)+
 			len(observabilityTools),
 	)
 	out = append(out, userTools...)
@@ -58,6 +59,7 @@ func (Provider) Tools() []mcptool.Tool {
 	out = append(out, locationTools...)
 	out = append(out, storyTools...)
 	out = append(out, searchTools...)
+	out = append(out, directTools...)
 	out = append(out, observabilityTools...)
 	return out
 }

@@ -218,6 +218,61 @@ type Story struct {
 	Raw json.RawMessage `json:"-"`
 }
 
+// DirectThread is a conversation returned by the authenticated viewer's
+// Instagram Direct inbox. Direct payloads are private; Raw must never be
+// logged or persisted without explicit redaction.
+type DirectThread struct {
+	ID             string        `json:"thread_id"`
+	Title          string        `json:"thread_title,omitempty"`
+	Users          []*User       `json:"users,omitempty"`
+	Items          []*DirectItem `json:"items,omitempty"`
+	LastActivityAt int64         `json:"last_activity_at,omitempty"`
+	IsGroup        bool          `json:"is_group,omitempty"`
+	IsPending      bool          `json:"is_pending,omitempty"`
+	Muted          bool          `json:"muted,omitempty"`
+	ReadState      int           `json:"read_state,omitempty"`
+
+	Raw json.RawMessage `json:"-"`
+}
+
+// DirectItem is one item in an Instagram Direct thread. Text is populated
+// only for captured text items; attachments, reactions, vanish mode, and
+// administrative events are intentionally left unsupported.
+type DirectItem struct {
+	ID             string `json:"item_id"`
+	ThreadID       string `json:"thread_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	ItemType       string `json:"item_type,omitempty"`
+	Text           string `json:"text,omitempty"`
+	Timestamp      int64  `json:"timestamp,omitempty"`
+	ClientContext  string `json:"client_context,omitempty"`
+	IsSentByViewer bool   `json:"is_sent_by_viewer,omitempty"`
+
+	Raw json.RawMessage `json:"-"`
+}
+
+// DirectTextRequest identifies the sole recipient and text for a Direct
+// message. ThreadID, ClientContext, and the authenticated RetryToken may be
+// supplied together to safely retry an uncertain broadcast without repeating
+// thread creation. For a new send, leave all three empty and the SDK generates
+// a cryptographically random context.
+type DirectTextRequest struct {
+	RecipientID   string `json:"recipient_id"`
+	Text          string `json:"text"`
+	ThreadID      string `json:"thread_id,omitempty"`
+	ClientContext string `json:"client_context,omitempty"`
+	RetryToken    string `json:"retry_token,omitempty"`
+}
+
+// DirectSendResult identifies the created/resolved thread and broadcast item.
+type DirectSendResult struct {
+	RecipientID   string `json:"recipient_id"`
+	ThreadID      string `json:"thread_id"`
+	ItemID        string `json:"item_id,omitempty"`
+	ClientContext string `json:"client_context"`
+	Status        string `json:"status,omitempty"`
+}
+
 // SearchResult bundles users, hashtags, and places returned by /web/search/topsearch/.
 type SearchResult struct {
 	Users    []*User    `json:"users,omitempty"`
