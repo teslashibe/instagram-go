@@ -1,9 +1,9 @@
 // Package instagram provides a Go client for Instagram's private web/mobile API.
 //
 // It supports authenticated profile lookup, post and reel feeds, comments,
-// followers/following, stories, hashtags, locations, and search — giving
-// programmatic access to Instagram's content graph from a logged-in browser
-// session.
+// followers/following, stories, hashtags, locations, search, and bounded
+// photo/Reel/Story publishing — giving programmatic access to Instagram's
+// content graph from a logged-in browser session.
 //
 // Zero production dependencies — stdlib only.
 //
@@ -61,11 +61,15 @@ const (
 	// Instagram tolerates ~15 reads/min from a web session before tripping
 	// "Please wait a few minutes." 4s = 15 reads/min with a small safety margin.
 	// Tune via WithMinRequestGap.
-	defaultMinGap      = 4 * time.Second
-	defaultMinWriteGap = 12 * time.Second
-	defaultMaxRetries  = 3
-	defaultRetryBase   = 750 * time.Millisecond
-	defaultTimeout     = 30 * time.Second
+	defaultMinGap              = 4 * time.Second
+	defaultMinWriteGap         = 12 * time.Second
+	defaultMaxRetries          = 3
+	defaultRetryBase           = 750 * time.Millisecond
+	defaultTimeout             = 30 * time.Second
+	defaultMaxPhotoUploadBytes = 25 << 20
+	defaultMaxVideoUploadBytes = 100 << 20
+	defaultUploadTimeout       = 2 * time.Minute
+	defaultProcessingTimeout   = 2 * time.Minute
 
 	// Default cooldown windows applied when Instagram signals a rate limit.
 	// Read cooldown is conservative because Instagram's "wait a few minutes"
@@ -94,21 +98,25 @@ type Cookies struct {
 
 // Client is an Instagram API client. It is safe for concurrent use.
 type Client struct {
-	cookies        Cookies
-	httpClient     *http.Client
-	wwwHost        string
-	apiHost        string
-	userAgent      string
-	appID          string
-	apiUserAgent   string
-	apiAppID       string
-	maxRetries     int
-	retryBase      time.Duration
-	minGap         time.Duration
-	writeGap       time.Duration
-	readCooldown   time.Duration
-	writeCooldown  time.Duration
-	skipValidation bool
+	cookies             Cookies
+	httpClient          *http.Client
+	wwwHost             string
+	apiHost             string
+	userAgent           string
+	appID               string
+	apiUserAgent        string
+	apiAppID            string
+	maxRetries          int
+	retryBase           time.Duration
+	minGap              time.Duration
+	writeGap            time.Duration
+	readCooldown        time.Duration
+	writeCooldown       time.Duration
+	skipValidation      bool
+	maxPhotoUploadBytes int64
+	maxVideoUploadBytes int64
+	uploadTimeout       time.Duration
+	processingTimeout   time.Duration
 
 	gapMu       sync.Mutex
 	lastReqAt   time.Time
@@ -302,6 +310,33 @@ func WithRateLimitCooldown(read, write time.Duration) Option {
 	}
 }
 
+// WithPublishingLimits configures maximum decoded upload sizes. Values must be
+// positive to replace the conservative defaults (25 MiB photos, 100 MiB video).
+// Limits are enforced while reading and before any Instagram request is made.
+func WithPublishingLimits(photoBytes, videoBytes int64) Option {
+	return func(c *Client) {
+		if photoBytes > 0 {
+			c.maxPhotoUploadBytes = photoBytes
+		}
+		if videoBytes > 0 {
+			c.maxVideoUploadBytes = videoBytes
+		}
+	}
+}
+
+// WithPublishingTimeouts configures the deadline for each upload request and
+// for the complete processing/status wait. Positive values replace defaults.
+func WithPublishingTimeouts(upload, processing time.Duration) Option {
+	return func(c *Client) {
+		if upload > 0 {
+			c.uploadTimeout = upload
+		}
+		if processing > 0 {
+			c.processingTimeout = processing
+		}
+	}
+}
+
 // WithSkipSessionValidation disables the initial session check inside New.
 // Useful for offline tests or when the caller wants to defer validation.
 func WithSkipSessionValidation() Option {
@@ -327,19 +362,23 @@ func New(cookies Cookies, opts ...Option) (*Client, error) {
 			Timeout:       defaultTimeout,
 			CheckRedirect: noFollowRedirect,
 		},
-		wwwHost:       baseURL,
-		apiHost:       defaultAPIHost,
-		userAgent:     defaultUserAgent,
-		appID:         defaultAppID,
-		apiUserAgent:  defaultAPIUserAgent,
-		apiAppID:      defaultAPIAppID,
-		maxRetries:    defaultMaxRetries,
-		retryBase:     defaultRetryBase,
-		minGap:        defaultMinGap,
-		writeGap:      defaultMinWriteGap,
-		readCooldown:  defaultReadCooldown,
-		writeCooldown: defaultWriteCooldown,
-		rateState:     RateLimitState{CapacityLevel: -1},
+		wwwHost:             baseURL,
+		apiHost:             defaultAPIHost,
+		userAgent:           defaultUserAgent,
+		appID:               defaultAppID,
+		apiUserAgent:        defaultAPIUserAgent,
+		apiAppID:            defaultAPIAppID,
+		maxRetries:          defaultMaxRetries,
+		retryBase:           defaultRetryBase,
+		minGap:              defaultMinGap,
+		writeGap:            defaultMinWriteGap,
+		readCooldown:        defaultReadCooldown,
+		writeCooldown:       defaultWriteCooldown,
+		maxPhotoUploadBytes: defaultMaxPhotoUploadBytes,
+		maxVideoUploadBytes: defaultMaxVideoUploadBytes,
+		uploadTimeout:       defaultUploadTimeout,
+		processingTimeout:   defaultProcessingTimeout,
+		rateState:           RateLimitState{CapacityLevel: -1},
 	}
 
 	for _, o := range opts {

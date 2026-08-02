@@ -18,11 +18,12 @@ const (
 )
 
 type recordedRequest struct {
-	method string
-	host   string
-	path   string
-	header http.Header
-	body   string
+	method        string
+	host          string
+	path          string
+	header        http.Header
+	body          string
+	contentLength int64
 }
 
 type recordingTransport struct {
@@ -38,11 +39,12 @@ func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	r.mu.Lock()
 	r.requests = append(r.requests, recordedRequest{
-		method: req.Method,
-		host:   req.URL.Host,
-		path:   req.URL.RequestURI(),
-		header: req.Header.Clone(),
-		body:   string(payload),
+		method:        req.Method,
+		host:          req.URL.Host,
+		path:          req.URL.RequestURI(),
+		header:        req.Header.Clone(),
+		body:          string(payload),
+		contentLength: req.ContentLength,
 	})
 	body := r.responses[req.URL.Host]
 	r.mu.Unlock()
@@ -180,6 +182,40 @@ func TestGraphQLDefaultsToWWWHostAndAllowsTransportHeaders(t *testing.T) {
 	assertHeader(t, req.header, "X-FB-Friendly-Name", "PolarisKeywordSearchExplorePageRelayQuery")
 	if got := req.body; got != form.Encode() {
 		t.Errorf("GraphQL body = %q, want %q", got, form.Encode())
+	}
+}
+
+func TestRawMobileUploadRequestPreservesBoundedBodyAndHeaders(t *testing.T) {
+	transport := &recordingTransport{responses: map[string]string{
+		"i.instagram.test": `{"status":"ok"}`,
+	}}
+	client := newHostTestClient(t, transport, WithMinWriteGap(0))
+	raw := []byte("jpeg")
+	if _, _, err := client.doRaw(context.Background(), http.MethodPost, "/rupload_igphoto/entity", nil,
+		&requestOptions{
+			Host: requestHostAPI, IsWrite: true, RawBody: raw,
+			ContentLength: int64(len(raw)), MaxAttempts: 1,
+			ExtraHeaders: map[string]string{
+				"X-Entity-Type":   "image/jpeg",
+				"X-Entity-Length": "4",
+			},
+		}); err != nil {
+		t.Fatal(err)
+	}
+	request := transport.onlyForHost(t, "i.instagram.test")
+	if request.method != http.MethodPost || request.path != "/rupload_igphoto/entity" {
+		t.Fatalf("request = %s %s", request.method, request.path)
+	}
+	if request.body != "jpeg" {
+		t.Fatalf("body = %q", request.body)
+	}
+	assertHeader(t, request.header, "X-Entity-Type", "image/jpeg")
+	assertHeader(t, request.header, "X-Entity-Length", "4")
+	if request.contentLength != 4 {
+		t.Fatalf("content length = %d", request.contentLength)
+	}
+	if request.header.Get("X-IG-WWW-Claim") != "" {
+		t.Fatal("raw mobile upload used web headers")
 	}
 }
 

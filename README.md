@@ -20,12 +20,16 @@ import "github.com/teslashibe/instagram-go"
 | Hashtags             | ✅   | ✅    | ✅ (read)   |
 | Locations            | ✅   | —     | ✅          |
 | Keyword discovery    | ✅   | —     | ✅          |
+| Photo/Reel/Story publishing | — | ✅ | burner live capture required |
 | Topical explore      | ✅   | —     | (offline)   |
 | Home timeline        | ✅   | —     | (offline)   |
 
 Write endpoints are implemented and shape-checked, but their integration tests are
 disabled by default — Instagram is aggressive about silent soft-blocks on write
 actions from server-side IPs. See [Rate limiting](#rate-limiting) below.
+Publishing additionally uses bounded uploads, deterministic IDs, asynchronous
+processing checks, and explicit burner-only validation; see
+[Publishing](#publishing).
 
 ## Install
 
@@ -347,6 +351,64 @@ soft-block. See [Rate limiting](#rate-limiting).
 | Hashtags        | `FollowHashtag`, `UnfollowHashtag`                                                     |
 | Stories         | `MarkStorySeen`                                                                        |
 
+## Publishing
+
+`PublishPhoto`, `PublishReel`, and `PublishStory` accept a typed
+`UploadSource`: an `io.Reader` plus exact filename, MIME type, byte length,
+dimensions, and video duration. Each call also requires an idempotency key,
+which is combined with the bounded content hash and metadata to derive stable
+upload/client IDs.
+
+```go
+file, _ := os.Open("disposable.jpg")
+info, _ := file.Stat()
+result, err := client.PublishPhoto(ctx, instagram.PublishPhotoInput{
+    Media: instagram.UploadSource{
+        Reader: file, Filename: info.Name(), MIMEType: "image/jpeg",
+        Size: info.Size(), Width: 1080, Height: 1350,
+    },
+    Caption: "disposable burner photo",
+    IdempotencyKey: "my-operation-123",
+})
+```
+
+Photos default to a 25 MiB decoded limit and videos to 100 MiB. Raw upload
+requests have a two-minute deadline, video processing has a separate two-minute
+deadline, and upload bodies are never blindly replayed. Override conservative
+SDK bounds with `WithPublishingLimits` and `WithPublishingTimeouts`.
+
+Failures can match `ErrFeedbackRequired`, `ErrProcessingFailed`,
+`ErrProcessingTimeout`, `ErrPartialUpload`, or `ErrUploadTooLarge` in addition
+to the existing challenge/rate/write sentinels. `DeleteMedia` deletes one exact
+caller-supplied media ID and is intended only for deliberate burner cleanup; it
+does not enumerate account data and is excluded from MCP.
+
+Instagram's private publishing protocol can rotate. The redaction command,
+current contract status, capture procedure, and safety boundary are documented
+in [`docs/inventory/publishing.md`](docs/inventory/publishing.md). Live
+publishing verification is intentionally opt-in and requires disposable assets:
+
+```bash
+IG_PUBLISH_LIVE_TEST=1 \
+IG_PUBLISH_BURNER_ACK=DISPOSABLE_BURNER_CONTENT \
+IG_PUBLISH_PHOTO_PATH=/secure/disposable.jpg \
+IG_PUBLISH_REEL_PATH=/secure/disposable.mp4 \
+IG_PUBLISH_REEL_THUMBNAIL_PATH=/secure/reel-thumb.jpg \
+IG_PUBLISH_REEL_DURATION_MS=3000 \
+IG_PUBLISH_STORY_PATH=/secure/story.mp4 \
+IG_PUBLISH_STORY_THUMBNAIL_PATH=/secure/story-thumb.jpg \
+IG_PUBLISH_STORY_DURATION_MS=3000 \
+go test -v -run '^TestIntegration_PublishDisposableBurnerMedia$' .
+```
+
+The test registers each returned ID for exact-ID cleanup before verifying it.
+It never lists or removes unrelated account media.
+
+Unsupported until separately captured and burner-verified: carousels, licensed
+music selection, stickers, structured mentions/tags, locations,
+collaboration/paid-partnership invitations, and scheduling. Plain caption text
+publishes immediately; embedded Reel audio remains original upload audio.
+
 ## Pagination
 
 All list endpoints return an `Iterator[T]`:
@@ -429,6 +491,12 @@ All errors wrap one of the package sentinels — match with `errors.Is`:
 | `ErrRateLimited`        | 429, `wait a few minutes`, or 302→login on a validated session  |
 | `ErrWriteSoftBlock`     | 302→login on a write action; read session still works           |
 | `ErrChallengeRequired`  | Account flagged for security checkpoint                         |
+| `ErrFeedbackRequired`   | `feedback_required`; also trips the write cooldown                |
+| `ErrProcessingFailed`   | Uploaded media reached a captured terminal processing failure     |
+| `ErrProcessingTimeout`  | Media did not become ready before the bounded processing deadline |
+| `ErrPartialUpload`      | A prior stage may have accepted bytes; do not change idempotency key |
+| `ErrUploadTooLarge`     | Declared or streamed bytes exceeded a local upload limit          |
+| `ErrInvalidPublishInput`| Publishing metadata or stream length failed local validation      |
 | `ErrNotFound`           | 404 or `user_not_found` response                                |
 | `ErrPrivateAccount`     | Resource belongs to a private account viewer doesn't follow     |
 | `ErrMediaUnavailable`   | Post deleted or hidden                                          |
@@ -494,10 +562,11 @@ go test -v -count=1 -run '^TestIntegration_GetPosts$' .
 This package ships an [MCP](https://modelcontextprotocol.io/) tool surface in
 `./mcp` for use with [`teslashibe/mcptool`](https://github.com/teslashibe/mcptool)-compatible
 hosts (e.g. [`teslashibe/agent-setup`](https://github.com/teslashibe/agent-setup)).
-52 tools cover the full client API: profile lookup and search, post/reel/timeline/explore
+61 tools cover the client API: profile lookup and search, post/reel/timeline/explore
 feeds, comments and likes, followers/following and friendship reads + writes
 (follow/unfollow/block/mute), hashtag and location reads + follow/unfollow,
-stories and highlights, blended top-search, and keyword post/reel search.
+stories and highlights, blended top-search, keyword post/reel search, and
+explicitly confirmed photo/Reel/Story publishing.
 
 ```go
 import (
@@ -518,6 +587,12 @@ A coverage test in `mcp/mcp_test.go` fails if a new exported method is added
 to `*Client` without either being wrapped by an MCP tool or being added to
 `mcp.Excluded` with a reason — keeping the MCP surface in lockstep with the
 package API is enforced by CI rather than convention.
+
+Publishing tools are separately tagged `write`, `publishing`, and `mutation`.
+They require `confirm_mutation: true`, accept decoded media only through bounded
+base64 inputs (8 MiB photo/thumbnail, 64 MiB video), and impose a two-minute
+per-call timeout. Missing confirmation or oversized input fails before any
+Instagram request.
 
 ## Conventions
 
