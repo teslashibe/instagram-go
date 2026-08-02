@@ -111,27 +111,27 @@ func (c *Client) readAccountContract(ctx context.Context) (accountContract, erro
 	if err != nil {
 		return accountContract{}, err
 	}
-	isProfessional, err := requiredAccountBool(fields, "is_professional_account")
+	isProfessional, err := optionalAccountBool(fields, "is_professional_account")
 	if err != nil {
 		return accountContract{}, err
 	}
-	isBusiness, err := requiredAccountBool(fields, "is_business")
+	isBusiness, err := optionalAccountBool(fields, "is_business")
 	if err != nil {
 		return accountContract{}, err
 	}
-	accountType, err := requiredAccountInt(fields, "account_type")
+	accountType, err := optionalAccountInt(fields, "account_type")
 	if err != nil {
 		return accountContract{}, err
 	}
-	categoryID, err := requiredAccountScalarString(fields, "category_id")
+	categoryID, err := optionalAccountScalarString(fields, "category_id")
 	if err != nil {
 		return accountContract{}, err
 	}
-	categoryName, err := requiredAccountString(fields, "category_name")
+	categoryName, err := optionalAccountString(fields, "category_name")
 	if err != nil {
 		return accountContract{}, err
 	}
-	displayCategory, err := requiredAccountBool(fields, "should_show_category")
+	displayCategory, err := optionalAccountBool(fields, "should_show_category")
 	if err != nil {
 		return accountContract{}, err
 	}
@@ -150,6 +150,66 @@ func requiredAccountRaw(fields map[string]json.RawMessage, name string) (json.Ra
 		return nil, fmt.Errorf("%w: current account field %q is missing or null", ErrUnexpectedResponse, name)
 	}
 	return raw, nil
+}
+
+func optionalAccountRaw(fields map[string]json.RawMessage, name string) json.RawMessage {
+	raw := fields[name]
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return raw
+}
+
+func optionalAccountString(fields map[string]json.RawMessage, name string) (string, error) {
+	raw := optionalAccountRaw(fields, name)
+	if raw == nil {
+		return "", nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("%w: current account field %q must be a string", ErrUnexpectedResponse, name)
+	}
+	return value, nil
+}
+
+func optionalAccountBool(fields map[string]json.RawMessage, name string) (bool, error) {
+	raw := optionalAccountRaw(fields, name)
+	if raw == nil {
+		return false, nil
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, fmt.Errorf("%w: current account field %q must be a boolean", ErrUnexpectedResponse, name)
+	}
+	return value, nil
+}
+
+func optionalAccountScalarString(fields map[string]json.RawMessage, name string) (string, error) {
+	raw := optionalAccountRaw(fields, name)
+	if raw == nil {
+		return "", nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return value, nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number.String(), nil
+	}
+	return "", fmt.Errorf("%w: current account field %q must be a string or number", ErrUnexpectedResponse, name)
+}
+
+func optionalAccountInt(fields map[string]json.RawMessage, name string) (int, error) {
+	value, err := optionalAccountScalarString(fields, name)
+	if err != nil || value == "" {
+		return 0, err
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%w: current account field %q must contain an integer", ErrUnexpectedResponse, name)
+	}
+	return number, nil
 }
 
 func requiredAccountString(fields map[string]json.RawMessage, name string) (string, error) {

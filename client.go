@@ -244,7 +244,7 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 	if opts.RawBody != nil {
 		req.ContentLength = int64(len(opts.RawBody))
 	}
-	if opts.ContentLength >= 0 && (opts.RawBody != nil || opts.ContentLength > 0) {
+	if opts.ContentLength > 0 {
 		req.ContentLength = opts.ContentLength
 	}
 

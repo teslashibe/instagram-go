@@ -147,8 +147,6 @@ func TestAccountReadRejectsMissingNullAndInvalidContractFields(t *testing.T) {
 	fixture := readAccountFixture(t, "account_current_user_response.json")
 	fields := []string{
 		"username", "full_name", "biography", "external_url", "is_private",
-		"is_professional_account", "is_business", "account_type", "category_id",
-		"category_name", "should_show_category",
 	}
 	for _, field := range fields {
 		field := field
