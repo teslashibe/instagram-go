@@ -1,6 +1,7 @@
 # instagram-go
 
-A Go client for Instagram's private web/mobile API (`api/v1/*`). Authenticated, stdlib-only,
+A Go client for Instagram's private web/mobile API (`api/v1/*`), plus a separate official Meta
+Graph/Marketing API client for professional insights and advertising. Authenticated, stdlib-only,
 zero production dependencies. Mirrors the conventions of [`x-go`](https://github.com/teslashibe/x-go),
 [`linkedin-go`](https://github.com/teslashibe/linkedin-go), and the rest of the teslashibe scraper family.
 
@@ -13,7 +14,7 @@ import "github.com/teslashibe/instagram-go"
 | Surface              | Read | Write | Tested live |
 |----------------------|:----:|:-----:|:-----------:|
 | Profiles & search    | ✅   | —     | ✅          |
-| Account administration | ✅ | ✅    | (offline; burner opt-in) |
+| Account administration | ✅ | ✅    | ✅ (burner) |
 | Posts / reels / feed | ✅   | ✅    | ✅ (read)   |
 | Comments / likers    | ✅   | ✅    | ✅ (read)   |
 | Followers / friendship| ✅  | ✅    | ✅ (read)   |
@@ -84,6 +85,20 @@ func main() {
 ```
 
 ## Authentication
+
+This repository has two deliberately separate clients and credential types:
+
+| Client | Package | Credential | Intended capabilities |
+|--------|---------|------------|-----------------------|
+| Private Instagram API | `instagram` (module root) | Browser session cookies | Consumer profiles, feeds, search, social actions |
+| Official Meta Graph API | `instagram/meta` | Facebook Login OAuth bearer token | Professional account/media insights and read-only advertising |
+
+Never put a Meta OAuth token in `Cookies`, and never provide Instagram cookies to
+`meta.New`. The transports, models, errors, and MCP providers are independent.
+See [Official Meta Graph and Marketing API](docs/meta-graph.md) for OAuth scopes,
+token storage, Page linkage, account selection, insight validation, and ad safety.
+
+### Private cookie authentication
 
 Required cookies (export from a logged-in browser session):
 
@@ -232,7 +247,8 @@ query-mismatched cursors fail before an HTTP request is made.
 needed by commenting helpers. It intentionally fetches only the first page: the
 live inventory proved response cursor fields but not their continuation request
 parameters. The iterator shape allows pagination to be added compatibly after a
-continuation request is captured. The `instagram_search_reels` MCP tool follows
+continuation request is captured; until then, passing a cursor to the iterator
+fails before an HTTP request. The `instagram_search_reels` MCP tool follows
 the same terminal contract: `limit` can truncate that first page, but the tool
 does not return a continuation cursor, and it rejects any supplied cursor before
 making an HTTP request.
@@ -535,7 +551,10 @@ go test -v -count=1 -run '^TestIntegration_AccountAdmin_ProfileRestoresBurner$' 
 ```
 
 Run one administration smoke test at a time. Privacy and professional-display
-test names are listed in the account-administration inventory document.
+test names are listed in the account-administration inventory document. The
+latest sanitized live outcomes, including verified profile/privacy restoration
+and the professional-display applicability result, are committed in
+[`docs/account-administration-live-validation.md`](docs/account-administration-live-validation.md).
 
 ## MCP support
 
