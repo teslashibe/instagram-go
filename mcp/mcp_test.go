@@ -139,6 +139,14 @@ func TestAccountAdministrationToolsRejectOmittedTransitionsWithoutHTTP(t *testin
 			name: "professional after", tool: "instagram_update_professional_settings", want: "after",
 			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":false},"confirm":true}`,
 		},
+		{
+			name: "profile nested after biography", tool: "instagram_update_profile_fields", want: "after.biography",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Bio","external_url":""},"after":{"full_name":"Name","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "professional nested after display_category", tool: "instagram_update_professional_settings", want: "after.display_category",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":false},"after":{"category_id":"1001"},"confirm":true}`,
+		},
 	}
 
 	for _, tt := range tests {
