@@ -2,6 +2,7 @@ package instagram_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -16,6 +17,9 @@ import (
 func TestIntegration_PublishDisposableBurnerMedia(t *testing.T) {
 	if os.Getenv("IG_PUBLISH_LIVE_TEST") != "1" {
 		t.Skip("set IG_PUBLISH_LIVE_TEST=1 for burner publishing verification")
+	}
+	if instagram.PublishingCaptureVersion == "" {
+		t.Skip("publishing remains fail-closed until a reviewed live burner capture is committed")
 	}
 	if os.Getenv("IG_PUBLISH_BURNER_ACK") != "DISPOSABLE_BURNER_CONTENT" {
 		t.Fatal("IG_PUBLISH_BURNER_ACK=DISPOSABLE_BURNER_CONTENT is required")
@@ -48,10 +52,13 @@ func TestIntegration_PublishDisposableBurnerMedia(t *testing.T) {
 	t.Cleanup(func() {
 		for index := len(results) - 1; index >= 0; index-- {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			err := client.DeleteMedia(cleanupCtx, results[index].MediaID)
+			err := client.DeleteMedia(cleanupCtx, results[index].MediaID, results[index].Kind)
+			if err == nil {
+				err = confirmDeletedMedia(cleanupCtx, client, results[index].MediaID)
+			}
 			cleanupCancel()
 			if err != nil {
-				t.Errorf("cleanup exact media ID %s: %v", results[index].MediaID, err)
+				t.Errorf("cleanup and confirm exact media ID %s: %v", results[index].MediaID, err)
 			}
 		}
 	})
@@ -84,6 +91,25 @@ func TestIntegration_PublishDisposableBurnerMedia(t *testing.T) {
 	}
 	cleanup(storyResult)
 	verifyCreatedMedia(t, ctx, client, storyResult)
+}
+
+func confirmDeletedMedia(ctx context.Context, client *instagram.Client, mediaID string) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		_, err := client.GetPostByID(ctx, mediaID)
+		if errors.Is(err, instagram.ErrNotFound) || errors.Is(err, instagram.ErrMediaUnavailable) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("post-delete readback: %w", err)
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return fmt.Errorf("media remained readable after exact-ID delete: %w", ctx.Err())
+		}
+	}
 }
 
 func liveSource(t *testing.T, env, mimeType string, width, height int, duration time.Duration) instagram.UploadSource {

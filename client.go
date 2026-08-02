@@ -42,6 +42,10 @@ type requestOptions struct {
 	// MaxAttempts overrides the client retry count for this request. Publishing
 	// uploads set this to 1 because a partially accepted body is unsafe to retry.
 	MaxAttempts int
+	// ContextControlsTimeout disables http.Client.Timeout for this request. The
+	// caller must supply a bounded context. Publishing uses this so its explicit
+	// upload/processing deadlines are not truncated by the client's 30s default.
+	ContextControlsTimeout bool
 }
 
 type requestHost uint8
@@ -114,7 +118,13 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 			return nil, nil, err
 		}
 
-		resp, err := c.httpClient.Do(req)
+		httpClient := c.httpClient
+		if opts.ContextControlsTimeout && c.httpClient.Timeout != 0 {
+			clone := *c.httpClient
+			clone.Timeout = 0
+			httpClient = &clone
+		}
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("instagram: http %s %s: %w", method, u, err)
 			if !shouldRetryNetErr(err) || attempt == maxAttempts {

@@ -20,16 +20,16 @@ import "github.com/teslashibe/instagram-go"
 | Hashtags             | ✅   | ✅    | ✅ (read)   |
 | Locations            | ✅   | —     | ✅          |
 | Keyword discovery    | ✅   | —     | ✅          |
-| Photo/Reel/Story publishing | — | ✅ | burner live capture required |
+| Photo/Reel/video-Story publishing | — | gated | live burner capture required |
 | Topical explore      | ✅   | —     | (offline)   |
 | Home timeline        | ✅   | —     | (offline)   |
 
 Write endpoints are implemented and shape-checked, but their integration tests are
 disabled by default — Instagram is aggressive about silent soft-blocks on write
 actions from server-side IPs. See [Rate limiting](#rate-limiting) below.
-Publishing additionally uses bounded uploads, deterministic IDs, asynchronous
-processing checks, and explicit burner-only validation; see
-[Publishing](#publishing).
+The typed publishing draft is fail-closed: it cannot perform a mutation until a
+reviewed, date-stamped live burner capture is committed with the matching code.
+See [Publishing](#publishing).
 
 ## Install
 
@@ -353,11 +353,18 @@ soft-block. See [Rate limiting](#rate-limiting).
 
 ## Publishing
 
-`PublishPhoto`, `PublishReel`, and `PublishStory` accept a typed
+`PublishPhoto`, `PublishReel`, and `PublishStory` define a typed
 `UploadSource`: an `io.Reader` plus exact filename, MIME type, byte length,
 dimensions, and video duration. Each call also requires an idempotency key,
 which is combined with the bounded content hash and metadata to derive stable
 upload/client IDs.
+
+No reviewed live publishing capture is currently committed, so
+`PublishingCaptureVersion` is empty and every SDK method returns
+`ErrPublishingCaptureRequired` before reading the stream or making an HTTP
+request. The MCP tools similarly return `publishing_capture_required`. This is
+the capture-before-publishing gate required for Instagram's rotating private
+protocol.
 
 ```go
 file, _ := os.Open("disposable.jpg")
@@ -372,16 +379,18 @@ result, err := client.PublishPhoto(ctx, instagram.PublishPhotoInput{
 })
 ```
 
-Photos default to a 25 MiB decoded limit and videos to 100 MiB. Raw upload
+After the capture gate is satisfied, photos default to a 25 MiB decoded limit
+and videos to 100 MiB. Raw upload
 requests have a two-minute deadline, video processing has a separate two-minute
 deadline, and upload bodies are never blindly replayed. Override conservative
 SDK bounds with `WithPublishingLimits` and `WithPublishingTimeouts`.
 
-Failures can match `ErrFeedbackRequired`, `ErrProcessingFailed`,
+The draft failure model includes `ErrFeedbackRequired`, `ErrProcessingFailed`,
 `ErrProcessingTimeout`, `ErrPartialUpload`, or `ErrUploadTooLarge` in addition
-to the existing challenge/rate/write sentinels. `DeleteMedia` deletes one exact
-caller-supplied media ID and is intended only for deliberate burner cleanup; it
-does not enumerate account data and is excluded from MCP.
+to the existing challenge/rate/write sentinels. `DeleteMedia` accepts the exact
+caller-supplied media ID plus the returned `PublishedMediaKind`, reproduces the
+per-kind deletion discriminator, and is intended only for deliberate burner
+cleanup. It does not enumerate account data and is excluded from MCP.
 
 Instagram's private publishing protocol can rotate. The redaction command,
 current contract status, capture procedure, and safety boundary are documented
@@ -401,13 +410,17 @@ IG_PUBLISH_STORY_DURATION_MS=3000 \
 go test -v -run '^TestIntegration_PublishDisposableBurnerMedia$' .
 ```
 
-The test registers each returned ID for exact-ID cleanup before verifying it.
-It never lists or removes unrelated account media.
+Once a capture is compiled in, the test registers each returned ID for exact-ID
+cleanup before verifying it, then reads that exact ID back after deletion until
+Instagram confirms it is unavailable. It never lists or removes unrelated
+account media.
 
-Unsupported until separately captured and burner-verified: carousels, licensed
+Unsupported until separately captured and burner-verified: photo Stories,
+carousels, licensed
 music selection, stickers, structured mentions/tags, locations,
 collaboration/paid-partnership invitations, and scheduling. Plain caption text
-publishes immediately; embedded Reel audio remains original upload audio.
+will publish immediately once the capture gate is enabled; embedded Reel audio
+remains original upload audio.
 
 ## Pagination
 
@@ -497,6 +510,7 @@ All errors wrap one of the package sentinels — match with `errors.Is`:
 | `ErrPartialUpload`      | A prior stage may have accepted bytes; do not change idempotency key |
 | `ErrUploadTooLarge`     | Declared or streamed bytes exceeded a local upload limit          |
 | `ErrInvalidPublishInput`| Publishing metadata or stream length failed local validation      |
+| `ErrPublishingCaptureRequired` | No reviewed live burner protocol is compiled in; no mutation occurred |
 | `ErrNotFound`           | 404 or `user_not_found` response                                |
 | `ErrPrivateAccount`     | Resource belongs to a private account viewer doesn't follow     |
 | `ErrMediaUnavailable`   | Post deleted or hidden                                          |
@@ -566,7 +580,7 @@ hosts (e.g. [`teslashibe/agent-setup`](https://github.com/teslashibe/agent-setup
 feeds, comments and likes, followers/following and friendship reads + writes
 (follow/unfollow/block/mute), hashtag and location reads + follow/unfollow,
 stories and highlights, blended top-search, keyword post/reel search, and
-explicitly confirmed photo/Reel/Story publishing.
+fail-closed, explicitly confirmed photo/Reel/video-Story publishing tools.
 
 ```go
 import (
@@ -591,8 +605,8 @@ package API is enforced by CI rather than convention.
 Publishing tools are separately tagged `write`, `publishing`, and `mutation`.
 They require `confirm_mutation: true`, accept decoded media only through bounded
 base64 inputs (8 MiB photo/thumbnail, 64 MiB video), and impose a two-minute
-per-call timeout. Missing confirmation or oversized input fails before any
-Instagram request.
+per-call timeout. Missing confirmation, oversized input, or a missing reviewed
+capture fails before any Instagram request.
 
 ## Conventions
 

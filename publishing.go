@@ -18,10 +18,24 @@ import (
 	"time"
 )
 
-// PublishingCaptureVersion identifies the reviewed protocol contract used by
-// this implementation. See docs/inventory/publishing.md. Private endpoints can
-// rotate; a future incompatible capture must update this value with the code.
-const PublishingCaptureVersion = "2026-08-01-v1"
+// PublishingCaptureVersion identifies the reviewed live burner capture compiled
+// into the SDK. It intentionally remains empty while the repository contains
+// only draft/offline fixtures: all publishing methods fail closed before
+// consuming a stream or making an HTTP request. A future implementation may set
+// this only in the same change that commits the reviewed, date-stamped capture.
+const PublishingCaptureVersion = ""
+
+const publishingDraftVersion = "2026-08-01-draft-v1"
+
+// PublishedMediaKind identifies the captured configure/delete contract for a
+// created media item.
+type PublishedMediaKind string
+
+const (
+	PublishedMediaPhoto PublishedMediaKind = "photo"
+	PublishedMediaReel  PublishedMediaKind = "reel"
+	PublishedMediaStory PublishedMediaKind = "story"
+)
 
 // UploadSource describes a bounded media stream. Size is the exact decoded byte
 // length, not a base64 length. Reader is consumed once by a publish call.
@@ -51,8 +65,8 @@ type PublishReelInput struct {
 	IdempotencyKey string
 }
 
-// PublishStoryInput is the typed input for a photo or video Story. Thumbnail is
-// required for video Stories and must be empty for photo Stories.
+// PublishStoryInput is the typed input for a video Story. Thumbnail is required.
+// Photo Story publishing is deliberately absent until separately captured.
 type PublishStoryInput struct {
 	Media          UploadSource
 	Thumbnail      *UploadSource
@@ -63,11 +77,11 @@ type PublishStoryInput struct {
 // PublishResult identifies exactly one created media item and the deterministic
 // identifiers used across upload, processing, and configure stages.
 type PublishResult struct {
-	MediaID  string `json:"media_id"`
-	Code     string `json:"code,omitempty"`
-	UploadID string `json:"upload_id"`
-	ClientID string `json:"client_id"`
-	Kind     string `json:"kind"`
+	MediaID  string             `json:"media_id"`
+	Code     string             `json:"code,omitempty"`
+	UploadID string             `json:"upload_id"`
+	ClientID string             `json:"client_id"`
+	Kind     PublishedMediaKind `json:"kind"`
 }
 
 // PublishError reports the safe protocol stage and deterministic identifiers
@@ -112,12 +126,18 @@ type preparedUpload struct {
 
 // PublishPhoto uploads and configures one feed photo.
 func (c *Client) PublishPhoto(ctx context.Context, in PublishPhotoInput) (*PublishResult, error) {
+	if err := c.ensurePublishingCapture(); err != nil {
+		return nil, err
+	}
 	media, err := c.prepareUpload("photo", in.IdempotencyKey, in.Media, false)
 	if err != nil {
 		return nil, err
 	}
 	if err := c.uploadAsset(ctx, media, "1", media.uploadID); err != nil {
 		return nil, publishStageError("photo_upload", media, uploadFailureMayBePartial(err), err)
+	}
+	if err := c.waitForProcessing(ctx, media); err != nil {
+		return nil, publishStageError("photo_processing", media, true, err)
 	}
 	form := c.baseConfigureForm(media, in.Caption)
 	return c.configurePublishedMedia(ctx, "photo", "/api/v1/media/configure/", media, form)
@@ -126,6 +146,9 @@ func (c *Client) PublishPhoto(ctx context.Context, in PublishPhotoInput) (*Publi
 // PublishReel uploads a video and its thumbnail, waits for captured media
 // processing states, and configures one Reel.
 func (c *Client) PublishReel(ctx context.Context, in PublishReelInput) (*PublishResult, error) {
+	if err := c.ensurePublishingCapture(); err != nil {
+		return nil, err
+	}
 	media, err := c.prepareUpload("reel", in.IdempotencyKey, in.Media, true)
 	if err != nil {
 		return nil, err
@@ -150,38 +173,34 @@ func (c *Client) PublishReel(ctx context.Context, in PublishReelInput) (*Publish
 	return c.configurePublishedMedia(ctx, "reel", "/api/v1/media/configure_to_clips/", media, form)
 }
 
-// PublishStory publishes one photo or video Story. Video Stories use the
-// captured thumbnail and processing/status contracts before configure.
+// PublishStory publishes one video Story using the captured thumbnail and
+// processing/status contracts before configure.
 func (c *Client) PublishStory(ctx context.Context, in PublishStoryInput) (*PublishResult, error) {
-	isVideo := strings.EqualFold(strings.TrimSpace(in.Media.MIMEType), "video/mp4")
-	media, err := c.prepareUpload("story", in.IdempotencyKey, in.Media, isVideo)
+	if err := c.ensurePublishingCapture(); err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(in.Media.MIMEType), "video/mp4") {
+		return nil, fmt.Errorf("%w: only captured video Story publishing is supported", ErrInvalidPublishInput)
+	}
+	if in.Thumbnail == nil {
+		return nil, fmt.Errorf("%w: video story thumbnail required", ErrInvalidPublishInput)
+	}
+	media, err := c.prepareUpload("story", in.IdempotencyKey, in.Media, true)
 	if err != nil {
 		return nil, err
 	}
-	if !isVideo && in.Thumbnail != nil {
-		return nil, fmt.Errorf("%w: thumbnail is only valid for video stories", ErrInvalidPublishInput)
-	}
-	if isVideo && in.Thumbnail == nil {
-		return nil, fmt.Errorf("%w: video story thumbnail required", ErrInvalidPublishInput)
-	}
-	mediaType := "1"
-	if isVideo {
-		mediaType = "2"
-	}
-	if err := c.uploadAsset(ctx, media, mediaType, media.uploadID); err != nil {
+	if err := c.uploadAsset(ctx, media, "2", media.uploadID); err != nil {
 		return nil, publishStageError("story_media_upload", media, uploadFailureMayBePartial(err), err)
 	}
-	if isVideo {
-		thumb, err := c.prepareRelatedImage("story_thumbnail", in.IdempotencyKey, *in.Thumbnail, media)
-		if err != nil {
-			return nil, publishStageError("story_thumbnail_prepare", media, true, err)
-		}
-		if err := c.uploadAsset(ctx, thumb, "1", media.uploadID+"_0"); err != nil {
-			return nil, publishStageError("story_thumbnail_upload", media, true, err)
-		}
-		if err := c.finishAndWaitForVideo(ctx, media, "story"); err != nil {
-			return nil, publishStageError("story_processing", media, true, err)
-		}
+	thumb, err := c.prepareRelatedImage("story_thumbnail", in.IdempotencyKey, *in.Thumbnail, media)
+	if err != nil {
+		return nil, publishStageError("story_thumbnail_prepare", media, true, err)
+	}
+	if err := c.uploadAsset(ctx, thumb, "1", media.uploadID+"_0"); err != nil {
+		return nil, publishStageError("story_thumbnail_upload", media, true, err)
+	}
+	if err := c.finishAndWaitForVideo(ctx, media, "story"); err != nil {
+		return nil, publishStageError("story_processing", media, true, err)
 	}
 	form := c.baseConfigureForm(media, in.Caption)
 	form.Set("configure_mode", "1")
@@ -189,16 +208,50 @@ func (c *Client) PublishStory(ctx context.Context, in PublishStoryInput) (*Publi
 	return c.configurePublishedMedia(ctx, "story", "/api/v1/media/configure_to_story/", media, form)
 }
 
-// DeleteMedia deletes exactly one caller-supplied media ID. It exists for
+// DeleteMedia deletes exactly one caller-supplied media ID using the per-kind
+// deletion discriminator established by the reviewed capture. It exists for
 // burner verification cleanup and deliberately does not enumerate account data.
-func (c *Client) DeleteMedia(ctx context.Context, mediaID string) error {
+func (c *Client) DeleteMedia(ctx context.Context, mediaID string, kind PublishedMediaKind) error {
+	if err := c.ensurePublishingCapture(); err != nil {
+		return err
+	}
 	mediaID = strings.TrimSpace(mediaID)
 	if mediaID == "" || strings.ContainsAny(mediaID, "/?&#") {
 		return errors.New("instagram: DeleteMedia: exact media ID required")
 	}
-	form := url.Values{"media_type": {"PHOTO"}}
-	return c.doJSON(ctx, http.MethodPost, "/api/v1/media/"+url.PathEscape(mediaID)+"/delete/", nil,
-		&requestOptions{Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1}, nil)
+	mediaType, err := deleteMediaType(kind)
+	if err != nil {
+		return err
+	}
+	form := url.Values{"media_type": {mediaType}}
+	deleteCtx, cancel := context.WithTimeout(ctx, c.uploadTimeout)
+	defer cancel()
+	return c.doJSON(deleteCtx, http.MethodPost, "/api/v1/media/"+url.PathEscape(mediaID)+"/delete/", nil,
+		&requestOptions{
+			Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1,
+			ContextControlsTimeout: true,
+		}, nil)
+}
+
+func deleteMediaType(kind PublishedMediaKind) (string, error) {
+	switch kind {
+	case PublishedMediaPhoto:
+		return "PHOTO", nil
+	case PublishedMediaReel:
+		return "VIDEO", nil
+	case PublishedMediaStory:
+		return "STORY", nil
+	default:
+		return "", fmt.Errorf("%w: unknown published media kind %q", ErrInvalidPublishInput, kind)
+	}
+}
+
+func (c *Client) ensurePublishingCapture() error {
+	if PublishingCaptureVersion != "" || c.allowUnverifiedPublishing {
+		return nil
+	}
+	return fmt.Errorf("%w: commit a reviewed date-stamped burner capture before enabling mutations",
+		ErrPublishingCaptureRequired)
 }
 
 func (c *Client) prepareUpload(kind, key string, source UploadSource, video bool) (preparedUpload, error) {
@@ -219,7 +272,7 @@ func (c *Client) prepareUpload(kind, key string, source UploadSource, video bool
 	}
 	digest := sha256.Sum256(raw)
 	identity := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d\x00%d\x00%d\x00%s",
-		PublishingCaptureVersion, kind, key, len(raw), source.Width, source.Height,
+		publishingProtocolVersion(), kind, key, len(raw), source.Width, source.Height,
 		source.Duration.Milliseconds(), hex.EncodeToString(digest[:]))
 	idDigest := sha256.Sum256([]byte(identity))
 	return preparedUpload{
@@ -227,6 +280,13 @@ func (c *Client) prepareUpload(kind, key string, source UploadSource, video bool
 		width: source.Width, height: source.Height, durationMS: source.Duration.Milliseconds(),
 		uploadID: deterministicUploadID(idDigest), clientID: deterministicUUID(idDigest),
 	}, nil
+}
+
+func publishingProtocolVersion() string {
+	if PublishingCaptureVersion != "" {
+		return PublishingCaptureVersion
+	}
+	return publishingDraftVersion
 }
 
 func (c *Client) prepareRelatedImage(kind, key string, source UploadSource, parent preparedUpload) (preparedUpload, error) {
@@ -333,6 +393,7 @@ func (c *Client) uploadAsset(ctx context.Context, media preparedUpload, mediaTyp
 		nil, &requestOptions{
 			Host: requestHostAPI, IsWrite: true, RawBody: media.bytes,
 			ContentLength: int64(len(media.bytes)), MaxAttempts: 1,
+			ContextControlsTimeout: true,
 			ExtraHeaders: map[string]string{
 				"X-Entity-Type":              media.mimeType,
 				"X-Entity-Name":              entityName,
@@ -385,9 +446,16 @@ func (c *Client) finishAndWaitForVideo(ctx context.Context, media preparedUpload
 	finishCtx, finishCancel := context.WithTimeout(ctx, c.uploadTimeout)
 	defer finishCancel()
 	if err := c.doJSON(finishCtx, http.MethodPost, "/api/v1/media/upload_finish/", nil,
-		&requestOptions{Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1}, nil); err != nil {
+		&requestOptions{
+			Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1,
+			ContextControlsTimeout: true,
+		}, nil); err != nil {
 		return err
 	}
+	return c.waitForProcessing(ctx, media)
+}
+
+func (c *Client) waitForProcessing(ctx context.Context, media preparedUpload) error {
 	processCtx, cancel := context.WithTimeout(ctx, c.processingTimeout)
 	defer cancel()
 	for {
@@ -401,7 +469,10 @@ func (c *Client) finishAndWaitForVideo(ctx context.Context, media preparedUpload
 			} `json:"processing_info"`
 		}
 		err := c.doJSON(processCtx, http.MethodGet, "/api/v1/media/upload_status/", q,
-			&requestOptions{Host: requestHostAPI, IsWrite: true, MaxAttempts: 1}, &response)
+			&requestOptions{
+				Host: requestHostAPI, IsWrite: true, MaxAttempts: 1,
+				ContextControlsTimeout: true,
+			}, &response)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				return ErrProcessingTimeout
@@ -437,7 +508,10 @@ func (c *Client) configurePublishedMedia(ctx context.Context, kind, path string,
 	configureCtx, cancel := context.WithTimeout(ctx, c.uploadTimeout)
 	defer cancel()
 	err := c.doJSON(configureCtx, http.MethodPost, path, nil,
-		&requestOptions{Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1}, &response)
+		&requestOptions{
+			Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1,
+			ContextControlsTimeout: true,
+		}, &response)
 	if err != nil {
 		return nil, publishStageError(kind+"_configure", media, true, err)
 	}
@@ -454,7 +528,8 @@ func (c *Client) configurePublishedMedia(ctx context.Context, kind, path string,
 			fmt.Errorf("%w: configure media has no ID", ErrUnexpectedResponse))
 	}
 	return &PublishResult{
-		MediaID: post.PK, Code: post.Code, UploadID: media.uploadID, ClientID: media.clientID, Kind: kind,
+		MediaID: post.PK, Code: post.Code, UploadID: media.uploadID, ClientID: media.clientID,
+		Kind: PublishedMediaKind(kind),
 	}, nil
 }
 

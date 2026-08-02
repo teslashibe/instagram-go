@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	instagram "github.com/teslashibe/instagram-go"
 	igmcp "github.com/teslashibe/instagram-go/mcp"
 	"github.com/teslashibe/mcptool"
 )
@@ -83,23 +82,12 @@ func TestPublishingToolRejectsOversizeAndInvalidBase64BeforeHTTP(t *testing.T) {
 	}
 }
 
-func TestPublishPhotoToolReturnsCreatedIdentifiers(t *testing.T) {
+func TestPublishPhotoToolFailsClosedWithoutReviewedCapture(t *testing.T) {
 	raw := []byte("burner")
+	requests := 0
 	client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
-		if strings.Contains(req.URL.Path, "/rupload_igphoto/") {
-			var params struct {
-				UploadID string `json:"upload_id"`
-			}
-			if err := json.Unmarshal([]byte(req.Header.Get("X-Instagram-Rupload-Params")), &params); err != nil {
-				t.Fatal(err)
-			}
-			return mcpJSONResponse(req, http.StatusOK, `{"status":"ok","upload_id":"`+params.UploadID+`"}`), nil
-		}
-		if req.URL.Path == "/api/v1/media/configure/" {
-			return mcpJSONResponse(req, http.StatusOK, `{"status":"ok","media":{"pk":"123","code":"SAFE","media_type":1}}`), nil
-		}
-		t.Fatalf("unexpected request %s", req.URL.Path)
-		return nil, nil
+		requests++
+		return mcpJSONResponse(req, http.StatusOK, `{"status":"ok"}`), nil
 	})
 	input, err := json.Marshal(map[string]any{
 		"confirm_mutation": true,
@@ -114,13 +102,13 @@ func TestPublishPhotoToolReturnsCreatedIdentifiers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := findTool(t, "instagram_publish_photo").Invoke(context.Background(), client, input)
-	if err != nil {
-		t.Fatal(err)
+	_, err = findTool(t, "instagram_publish_photo").Invoke(context.Background(), client, input)
+	var toolErr *mcptool.Error
+	if !errors.As(err, &toolErr) || toolErr.Code != "publishing_capture_required" {
+		t.Fatalf("error = %#v", err)
 	}
-	result, ok := value.(*instagram.PublishResult)
-	if !ok || result.MediaID != "123" || result.UploadID == "" || result.ClientID == "" {
-		t.Fatalf("result = %#v (%T)", value, value)
+	if requests != 0 {
+		t.Fatalf("capture-gated MCP publish made %d requests", requests)
 	}
 }
 

@@ -22,12 +22,16 @@ func renderReport(report inventoryReport) string {
 			fmt.Fprintf(&b, "- HTTP status: `%d`\n", surface.StatusCode)
 			fmt.Fprintf(&b, "- Request header names: %s\n", markdownList(surface.RequestHeaders))
 			fmt.Fprintf(&b, "- Request field names: %s\n", markdownList(surface.RequestFields))
+			fmt.Fprintf(&b, "- Request query names: %s\n", markdownList(surface.RequestQueryFields))
 			fmt.Fprintf(&b, "- Response field paths: %s\n\n", markdownList(surface.ResponseFields))
 		}
+		fmt.Fprintf(&b, "- Captured processing states: %s\n", markdownList(flow.ProcessingStates))
+		fmt.Fprintf(&b, "- Captured exact-delete `media_type`: `%s`\n\n", flow.DeleteMediaType)
 	}
 	fmt.Fprintln(&b, "## Safety boundary")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "- Each HAR must include successful deletion of the exact media created by that same burner flow.")
+	fmt.Fprintln(&b, "- A post-delete readback of that exact ID must prove it is unavailable.")
 	fmt.Fprintln(&b, "- The inventory command never enumerates or deletes account media.")
 	fmt.Fprintln(&b, "- Re-capture before changing endpoint, header, configure, processing, or status contracts.")
 	return b.String()

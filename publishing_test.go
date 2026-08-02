@@ -60,6 +60,7 @@ func newPublishingClient(t *testing.T, transport *publishTransport, opts ...Opti
 	if err != nil {
 		t.Fatal(err)
 	}
+	client.allowUnverifiedPublishing = true
 	return client
 }
 
@@ -100,6 +101,43 @@ func successfulPublishHandler(req *http.Request, _ []byte) (int, string, error) 
 	}
 }
 
+func TestPublishingFailsClosedWithoutReviewedCaptureBeforeReadingOrHTTP(t *testing.T) {
+	transport := &publishTransport{handler: successfulPublishHandler}
+	options := []Option{
+		WithAPIHost("https://i.instagram.test"),
+		WithHTTPClient(&http.Client{Transport: transport}),
+		WithSkipSessionValidation(),
+	}
+	client, err := New(Cookies{SessionID: "session", CSRFToken: "csrf", DSUserID: "42"}, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &countingReader{Reader: strings.NewReader("photo")}
+	_, err = client.PublishPhoto(context.Background(), PublishPhotoInput{
+		Media: UploadSource{
+			Reader: reader, Filename: "burner.jpg", MIMEType: "image/jpeg",
+			Size: 5, Width: 1, Height: 1,
+		},
+		IdempotencyKey: "capture-gate",
+	})
+	if !errors.Is(err, ErrPublishingCaptureRequired) {
+		t.Fatalf("error = %v, want ErrPublishingCaptureRequired", err)
+	}
+	if reader.Reads != 0 || len(transport.requests) != 0 {
+		t.Fatalf("capture-gated publish consumed %d reads and made %d requests", reader.Reads, len(transport.requests))
+	}
+}
+
+type countingReader struct {
+	io.Reader
+	Reads int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	r.Reads++
+	return r.Reader.Read(p)
+}
+
 func TestPublishPhotoUsesDeterministicCapturedContract(t *testing.T) {
 	raw := []byte("disposable-photo")
 	run := func() (*PublishResult, []publishRecordedRequest) {
@@ -121,7 +159,7 @@ func TestPublishPhotoUsesDeterministicCapturedContract(t *testing.T) {
 	if first.MediaID != "999" || first.Kind != "photo" {
 		t.Fatalf("result = %#v", first)
 	}
-	if len(firstRequests) != 2 || len(secondRequests) != 2 {
+	if len(firstRequests) != 3 || len(secondRequests) != 3 {
 		t.Fatalf("request counts = %d, %d", len(firstRequests), len(secondRequests))
 	}
 	upload := firstRequests[0]
@@ -139,7 +177,10 @@ func TestPublishPhotoUsesDeterministicCapturedContract(t *testing.T) {
 	if params["upload_id"] != first.UploadID || params["upload_media_width"] != "1080" {
 		t.Fatalf("rupload params = %#v", params)
 	}
-	configure := firstRequests[1]
+	if !strings.HasPrefix(firstRequests[1].Path, "/api/v1/media/upload_status/?") {
+		t.Fatalf("status path = %s", firstRequests[1].Path)
+	}
+	configure := firstRequests[2]
 	if configure.Path != "/api/v1/media/configure/" {
 		t.Fatalf("configure path = %s", configure.Path)
 	}
@@ -155,10 +196,10 @@ func TestPublishReelAndVideoStorySequence(t *testing.T) {
 		name      string
 		call      func(*Client) (*PublishResult, error)
 		configure string
-		kind      string
+		kind      PublishedMediaKind
 	}{
 		{
-			name: "reel", configure: "/api/v1/media/configure_to_clips/", kind: "reel",
+			name: "reel", configure: "/api/v1/media/configure_to_clips/", kind: PublishedMediaReel,
 			call: func(c *Client) (*PublishResult, error) {
 				return c.PublishReel(context.Background(), PublishReelInput{
 					Media: videoSource([]byte("video")), Thumbnail: photoSource([]byte("thumb")),
@@ -167,7 +208,7 @@ func TestPublishReelAndVideoStorySequence(t *testing.T) {
 			},
 		},
 		{
-			name: "story", configure: "/api/v1/media/configure_to_story/", kind: "story",
+			name: "story", configure: "/api/v1/media/configure_to_story/", kind: PublishedMediaStory,
 			call: func(c *Client) (*PublishResult, error) {
 				thumb := photoSource([]byte("thumb"))
 				return c.PublishStory(context.Background(), PublishStoryInput{
@@ -200,6 +241,20 @@ func TestPublishReelAndVideoStorySequence(t *testing.T) {
 				t.Fatalf("thumbnail entity path = %s", transport.requests[1].Path)
 			}
 		})
+	}
+}
+
+func TestPublishStoryRejectsUncapturedPhotoStoryBeforeHTTP(t *testing.T) {
+	transport := &publishTransport{handler: successfulPublishHandler}
+	client := newPublishingClient(t, transport)
+	_, err := client.PublishStory(context.Background(), PublishStoryInput{
+		Media: photoSource([]byte("photo")), IdempotencyKey: "photo-story",
+	})
+	if !errors.Is(err, ErrInvalidPublishInput) || !strings.Contains(err.Error(), "only captured video Story") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(transport.requests) != 0 {
+		t.Fatalf("photo Story made %d HTTP requests", len(transport.requests))
 	}
 }
 
@@ -307,16 +362,56 @@ func TestPublishingClassifiesProcessingFailureAndTimeout(t *testing.T) {
 func TestDeleteMediaUsesOnlyExactSuppliedID(t *testing.T) {
 	transport := &publishTransport{handler: successfulPublishHandler}
 	client := newPublishingClient(t, transport)
-	if err := client.DeleteMedia(context.Background(), "999_42"); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		kind PublishedMediaKind
+		want string
+	}{
+		{PublishedMediaPhoto, "PHOTO"},
+		{PublishedMediaReel, "VIDEO"},
+		{PublishedMediaStory, "STORY"},
 	}
-	if len(transport.requests) != 1 || transport.requests[0].Path != "/api/v1/media/999_42/delete/" {
+	for _, tt := range tests {
+		if err := client.DeleteMedia(context.Background(), "999_42", tt.kind); err != nil {
+			t.Fatal(err)
+		}
+		form, err := url.ParseQuery(string(transport.requests[len(transport.requests)-1].Body))
+		if err != nil || form.Get("media_type") != tt.want {
+			t.Fatalf("delete form = %q, want media_type=%s", transport.requests[len(transport.requests)-1].Body, tt.want)
+		}
+	}
+	if len(transport.requests) != 3 || transport.requests[0].Path != "/api/v1/media/999_42/delete/" {
 		t.Fatalf("delete requests = %#v", transport.requests)
 	}
-	if err := client.DeleteMedia(context.Background(), "../all"); err == nil {
+	if err := client.DeleteMedia(context.Background(), "../all", PublishedMediaPhoto); err == nil {
 		t.Fatal("unsafe media ID accepted")
 	}
-	if len(transport.requests) != 1 {
+	if err := client.DeleteMedia(context.Background(), "999_42", "unknown"); !errors.Is(err, ErrInvalidPublishInput) {
+		t.Fatalf("unknown kind error = %v", err)
+	}
+	if len(transport.requests) != 3 {
 		t.Fatal("unsafe ID made an HTTP request")
+	}
+}
+
+func TestPublishingTimeoutOverridesDefaultHTTPClientTimeout(t *testing.T) {
+	transport := &publishTransport{handler: func(req *http.Request, body []byte) (int, string, error) {
+		if strings.Contains(req.URL.Path, "/rupload_ig") {
+			select {
+			case <-time.After(40 * time.Millisecond):
+				return successfulPublishHandler(req, body)
+			case <-req.Context().Done():
+				return 0, "", req.Context().Err()
+			}
+		}
+		return successfulPublishHandler(req, body)
+	}}
+	client := newPublishingClient(t, transport,
+		WithHTTPClient(&http.Client{Transport: transport, Timeout: 5 * time.Millisecond}),
+		WithPublishingTimeouts(100*time.Millisecond, time.Second),
+	)
+	if _, err := client.PublishPhoto(context.Background(), PublishPhotoInput{
+		Media: photoSource([]byte("photo")), IdempotencyKey: "timeout-override",
+	}); err != nil {
+		t.Fatalf("publishing deadline was truncated by http.Client.Timeout: %v", err)
 	}
 }

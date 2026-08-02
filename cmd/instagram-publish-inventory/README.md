@@ -17,7 +17,13 @@ go run ./cmd/instagram-publish-inventory \
   -output docs/inventory/captures/YYYY-MM-DD-instagram-publishing.md
 ```
 
-The command fails closed if any flow omits upload, thumbnail where applicable,
-media-processing/status, configure, or exact-media deletion. HARs, cookies,
-binary content, captions, and IDs must remain outside the repository. Human
-review and a secret scan are still required before committing the report.
+The command fails closed unless each flow uses `https://i.instagram.com`, the
+captured methods, ordered stages, required header/form/query names, correlated
+upload/client/media IDs, known processing states ending in ready, its per-kind
+delete discriminator, and a post-delete exact-ID readback proving the media is
+unavailable. Photo capture includes its status request; Reel and video Story
+captures include both pending and ready processing observations.
+
+HARs, cookies, binary content, captions, and IDs must remain outside the
+repository. Human review and a secret scan are still required before committing
+the report and enabling `PublishingCaptureVersion`.

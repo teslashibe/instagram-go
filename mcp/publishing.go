@@ -53,22 +53,22 @@ type PublishReelInput struct {
 	IdempotencyKey  string `json:"idempotency_key" jsonschema:"description=stable caller key used to derive deterministic upload IDs,minLength=1,maxLength=128,required"`
 }
 
-// PublishStoryInput is the explicitly confirmed input for
-// instagram_publish_story. Video stories require thumbnail fields.
+// PublishStoryInput is the explicitly confirmed input for one video Story.
+// Photo Story publication remains unavailable until separately captured.
 type PublishStoryInput struct {
 	ConfirmMutation bool   `json:"confirm_mutation" jsonschema:"description=must be true to confirm publishing content to Instagram,required"`
-	MediaBase64     string `json:"media_base64" jsonschema:"description=base64-encoded JPEG or MP4 bytes,required"`
-	Filename        string `json:"filename" jsonschema:"description=media basename,required"`
-	MIMEType        string `json:"mime_type" jsonschema:"description=image/jpeg or video/mp4,required"`
+	MediaBase64     string `json:"media_base64" jsonschema:"description=base64-encoded MP4 bytes,required"`
+	Filename        string `json:"filename" jsonschema:"description=MP4 basename,required"`
+	MIMEType        string `json:"mime_type" jsonschema:"description=must be video/mp4,required"`
 	ByteSize        int64  `json:"byte_size" jsonschema:"description=exact decoded byte length,minimum=1,maximum=67108864,required"`
 	Width           int    `json:"width" jsonschema:"description=source width in pixels,minimum=1,required"`
 	Height          int    `json:"height" jsonschema:"description=source height in pixels,minimum=1,required"`
-	DurationMS      int64  `json:"duration_ms,omitempty" jsonschema:"description=video duration in milliseconds; zero for photos,minimum=0"`
-	ThumbnailBase64 string `json:"thumbnail_base64,omitempty" jsonschema:"description=required JPEG thumbnail for video stories"`
-	ThumbnailName   string `json:"thumbnail_filename,omitempty" jsonschema:"description=thumbnail JPEG basename"`
-	ThumbnailSize   int64  `json:"thumbnail_byte_size,omitempty" jsonschema:"description=exact decoded thumbnail length,minimum=0,maximum=8388608"`
-	ThumbnailWidth  int    `json:"thumbnail_width,omitempty" jsonschema:"description=thumbnail width in pixels,minimum=0"`
-	ThumbnailHeight int    `json:"thumbnail_height,omitempty" jsonschema:"description=thumbnail height in pixels,minimum=0"`
+	DurationMS      int64  `json:"duration_ms" jsonschema:"description=video duration in milliseconds,minimum=1,required"`
+	ThumbnailBase64 string `json:"thumbnail_base64" jsonschema:"description=base64-encoded JPEG thumbnail bytes,required"`
+	ThumbnailName   string `json:"thumbnail_filename" jsonschema:"description=thumbnail JPEG basename,required"`
+	ThumbnailSize   int64  `json:"thumbnail_byte_size" jsonschema:"description=exact decoded thumbnail length,minimum=1,maximum=8388608,required"`
+	ThumbnailWidth  int    `json:"thumbnail_width" jsonschema:"description=thumbnail width in pixels,minimum=1,required"`
+	ThumbnailHeight int    `json:"thumbnail_height" jsonschema:"description=thumbnail height in pixels,minimum=1,required"`
 	Caption         string `json:"caption,omitempty" jsonschema:"description=plain-text Story caption"`
 	IdempotencyKey  string `json:"idempotency_key" jsonschema:"description=stable caller key used to derive deterministic upload IDs,minLength=1,maxLength=128,required"`
 }
@@ -79,6 +79,9 @@ func publishPhoto(ctx context.Context, c *instagram.Client, in PublishPhotoInput
 	}
 	media, err := decodeMCPMedia(in.MediaBase64, in.ByteSize, maxMCPPhotoBytes)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireCapturedPublishing(); err != nil {
 		return nil, err
 	}
 	callCtx, cancel := context.WithTimeout(ctx, maxMCPTimeout)
@@ -108,6 +111,9 @@ func publishReel(ctx context.Context, c *instagram.Client, in PublishReelInput) 
 	if err != nil {
 		return nil, prefixToolError("invalid thumbnail: ", err)
 	}
+	if err := requireCapturedPublishing(); err != nil {
+		return nil, err
+	}
 	callCtx, cancel := context.WithTimeout(ctx, maxMCPTimeout)
 	defer cancel()
 	result, err := c.PublishReel(callCtx, instagram.PublishReelInput{
@@ -131,24 +137,23 @@ func publishStory(ctx context.Context, c *instagram.Client, in PublishStoryInput
 	if err := requireMutationConfirmation(in.ConfirmMutation); err != nil {
 		return nil, err
 	}
-	limit := int64(maxMCPPhotoBytes)
-	if strings.EqualFold(strings.TrimSpace(in.MIMEType), "video/mp4") {
-		limit = maxMCPVideoBytes
+	if !strings.EqualFold(strings.TrimSpace(in.MIMEType), "video/mp4") {
+		return nil, &mcptool.Error{Code: "invalid_input", Message: "mime_type must be video/mp4 for captured Story publishing"}
 	}
-	media, err := decodeMCPMedia(in.MediaBase64, in.ByteSize, limit)
+	media, err := decodeMCPMedia(in.MediaBase64, in.ByteSize, maxMCPVideoBytes)
 	if err != nil {
 		return nil, err
 	}
-	var thumbnail *instagram.UploadSource
-	if in.ThumbnailBase64 != "" || in.ThumbnailSize != 0 {
-		thumb, err := decodeMCPMedia(in.ThumbnailBase64, in.ThumbnailSize, maxMCPPhotoBytes)
-		if err != nil {
-			return nil, prefixToolError("invalid thumbnail: ", err)
-		}
-		thumbnail = &instagram.UploadSource{
-			Reader: bytes.NewReader(thumb), Filename: in.ThumbnailName, MIMEType: "image/jpeg",
-			Size: in.ThumbnailSize, Width: in.ThumbnailWidth, Height: in.ThumbnailHeight,
-		}
+	thumb, err := decodeMCPMedia(in.ThumbnailBase64, in.ThumbnailSize, maxMCPPhotoBytes)
+	if err != nil {
+		return nil, prefixToolError("invalid thumbnail: ", err)
+	}
+	if err := requireCapturedPublishing(); err != nil {
+		return nil, err
+	}
+	thumbnail := &instagram.UploadSource{
+		Reader: bytes.NewReader(thumb), Filename: in.ThumbnailName, MIMEType: "image/jpeg",
+		Size: in.ThumbnailSize, Width: in.ThumbnailWidth, Height: in.ThumbnailHeight,
 	}
 	callCtx, cancel := context.WithTimeout(ctx, maxMCPTimeout)
 	defer cancel()
@@ -172,6 +177,16 @@ func requireMutationConfirmation(confirmed bool) error {
 	return &mcptool.Error{
 		Code:    "mutation_confirmation_required",
 		Message: "confirm_mutation must be true before publishing content to Instagram",
+	}
+}
+
+func requireCapturedPublishing() error {
+	if instagram.PublishingCaptureVersion != "" {
+		return nil
+	}
+	return &mcptool.Error{
+		Code:    "publishing_capture_required",
+		Message: "publishing is disabled until a reviewed live burner capture is committed",
 	}
 }
 
@@ -215,6 +230,8 @@ func publishingToolError(err error) error {
 		return &mcptool.Error{Code: "upload_too_large", Message: "media exceeds the configured upload limit"}
 	case errors.Is(err, instagram.ErrInvalidPublishInput):
 		return &mcptool.Error{Code: "invalid_input", Message: err.Error()}
+	case errors.Is(err, instagram.ErrPublishingCaptureRequired):
+		return &mcptool.Error{Code: "publishing_capture_required", Message: "publishing is disabled until a reviewed live burner capture is committed"}
 	default:
 		return err
 	}
@@ -250,7 +267,7 @@ var publishingTools = []mcptool.Tool{
 	)),
 	classifiedPublishingTool(mcptool.Define[*instagram.Client, PublishStoryInput](
 		"instagram_publish_story",
-		"Publish one confirmed, size-bounded photo or video Story",
+		"Publish one confirmed, size-bounded MP4 video Story and JPEG thumbnail",
 		"PublishStory",
 		publishStory,
 	)),

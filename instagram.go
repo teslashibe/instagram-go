@@ -1,9 +1,10 @@
 // Package instagram provides a Go client for Instagram's private web/mobile API.
 //
 // It supports authenticated profile lookup, post and reel feeds, comments,
-// followers/following, stories, hashtags, locations, search, and bounded
-// photo/Reel/Story publishing — giving programmatic access to Instagram's
-// content graph from a logged-in browser session.
+// followers/following, stories, hashtags, locations, and search — giving
+// programmatic access to Instagram's content graph from a logged-in browser
+// session. It also defines a bounded, fail-closed publishing draft that remains
+// disabled until a reviewed live burner capture is compiled in.
 //
 // Zero production dependencies — stdlib only.
 //
@@ -117,6 +118,9 @@ type Client struct {
 	maxVideoUploadBytes int64
 	uploadTimeout       time.Duration
 	processingTimeout   time.Duration
+	// allowUnverifiedPublishing is test-only state set by package-internal
+	// fixtures. No exported option can bypass the live-capture gate.
+	allowUnverifiedPublishing bool
 
 	gapMu       sync.Mutex
 	lastReqAt   time.Time

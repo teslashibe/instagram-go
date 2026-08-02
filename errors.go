@@ -56,6 +56,11 @@ var (
 	// invalid.
 	ErrInvalidPublishInput = errors.New("instagram: invalid publishing input")
 
+	// ErrPublishingCaptureRequired is returned before consuming media or making
+	// an HTTP request while no reviewed, current burner capture is compiled into
+	// the SDK. Publishing deliberately fails closed until that evidence exists.
+	ErrPublishingCaptureRequired = errors.New("instagram: verified publishing capture required")
+
 	// ErrNotFound is returned for 404s and for usernames/IDs that resolve to
 	// a user_not_found response from Instagram.
 	ErrNotFound = errors.New("instagram: not found")
