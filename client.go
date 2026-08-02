@@ -46,9 +46,6 @@ type requestOptions struct {
 	// ContentLength sets the request's declared entity length. A negative value
 	// leaves net/http's default behavior unchanged.
 	ContentLength int64
-	// MaxAttempts overrides the client retry count for this request. Publishing
-	// uploads set this to 1 because a partially accepted body is unsafe to retry.
-	MaxAttempts int
 	// ContextControlsTimeout disables http.Client.Timeout for this request. The
 	// caller must supply a bounded context. Publishing uses this so its explicit
 	// upload/processing deadlines are not truncated by the client's 30s default.
