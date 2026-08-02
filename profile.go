@@ -66,7 +66,14 @@ func (c *Client) currentUser(ctx context.Context) (*User, error) {
 	if c.cookies.DSUserID == "" {
 		return nil, fmt.Errorf("%w: DSUserID required for session validation", ErrInvalidAuth)
 	}
-	return c.GetProfileByID(ctx, c.cookies.DSUserID)
+	u, err := c.GetProfileByID(ctx, c.cookies.DSUserID)
+	if err != nil {
+		return nil, err
+	}
+	if u.ID != c.cookies.DSUserID {
+		return nil, &AccountMismatchError{ExpectedAccountID: c.cookies.DSUserID, ActualAccountID: u.ID}
+	}
+	return u, nil
 }
 
 // parseUser unmarshals a user payload (possibly with numeric or string pk)

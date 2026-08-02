@@ -64,6 +64,255 @@ func TestToolsHaveInstagramPrefix(t *testing.T) {
 	}
 }
 
+func TestAccountAdministrationToolsAreNarrowAndConfirmed(t *testing.T) {
+	readTools := []string{
+		"instagram_get_current_account", "instagram_get_account_settings", "instagram_get_professional_account_state",
+	}
+	for _, name := range readTools {
+		if tool := findTool(t, name); tool.WrapsMethod == "" {
+			t.Fatalf("%s is not registered", name)
+		}
+	}
+	for _, name := range []string{
+		"instagram_update_profile_fields", "instagram_set_privacy", "instagram_update_professional_settings",
+	} {
+		tool := findTool(t, name)
+		properties, ok := tool.InputSchema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties = %#v", name, tool.InputSchema["properties"])
+		}
+		for _, field := range []string{"expected_account_id", "before", "after", "confirm"} {
+			if _, ok := properties[field]; !ok {
+				t.Errorf("%s schema lacks %q", name, field)
+			}
+		}
+		if !schemaContainsRequiredFields(tool.InputSchema, []string{"expected_account_id", "before", "after", "confirm"}) {
+			t.Errorf("%s schema does not require every mutation control: %#v", name, tool.InputSchema)
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		for _, forbidden := range []string{"password", "email", "phone", "two_factor", "deactivation", "deletion", "ownership"} {
+			if strings.Contains(strings.ToLower(string(raw)), forbidden) {
+				t.Errorf("%s schema contains excluded capability %q: %s", name, forbidden, raw)
+			}
+		}
+	}
+	if schema := findTool(t, "instagram_update_profile_fields").InputSchema; !schemaContainsRequiredFields(schema, []string{"full_name", "biography", "external_url"}) {
+		t.Errorf("profile mutation schema does not require every nested before/after value: %#v", schema)
+	}
+	if schema := findTool(t, "instagram_update_professional_settings").InputSchema; !schemaContainsRequiredFields(schema, []string{"category_id", "display_category"}) {
+		t.Errorf("professional mutation schema does not require every nested before/after value: %#v", schema)
+	}
+}
+
+func schemaContainsRequiredFields(value any, want []string) bool {
+	switch node := value.(type) {
+	case map[string]any:
+		properties, hasProperties := node["properties"].(map[string]any)
+		required, hasRequired := node["required"].([]any)
+		if hasProperties && hasRequired {
+			requiredSet := make(map[string]bool, len(required))
+			for _, field := range required {
+				name, _ := field.(string)
+				requiredSet[name] = true
+			}
+			complete := true
+			for _, field := range want {
+				if _, exists := properties[field]; !exists || !requiredSet[field] {
+					complete = false
+					break
+				}
+			}
+			if complete {
+				return true
+			}
+		}
+		for _, child := range node {
+			if schemaContainsRequiredFields(child, want) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if schemaContainsRequiredFields(child, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestAccountAdministrationToolsRequireConfirmationWithoutHTTP(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+		body string
+	}{
+		{
+			name: "profile omitted", tool: "instagram_update_profile_fields",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Before","external_url":""},"after":{"full_name":"Name","biography":"After","external_url":""}}`,
+		},
+		{
+			name: "profile false", tool: "instagram_update_profile_fields",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Before","external_url":""},"after":{"full_name":"Name","biography":"After","external_url":""},"confirm":false}`,
+		},
+		{
+			name: "privacy omitted", tool: "instagram_set_privacy",
+			body: `{"expected_account_id":"viewer","before":true,"after":false}`,
+		},
+		{
+			name: "privacy false", tool: "instagram_set_privacy",
+			body: `{"expected_account_id":"viewer","before":true,"after":false,"confirm":false}`,
+		},
+		{
+			name: "professional omitted", tool: "instagram_update_professional_settings",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":true},"after":{"category_id":"1001","display_category":false}}`,
+		},
+		{
+			name: "professional false", tool: "instagram_update_professional_settings",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":true},"after":{"category_id":"1001","display_category":false},"confirm":false}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return mcpJSONResponse(req, http.StatusOK, `{}`), nil
+			})
+			_, err := findTool(t, tt.tool).Invoke(context.Background(), client, json.RawMessage(tt.body))
+			var toolErr *mcptool.Error
+			if !errors.As(err, &toolErr) || toolErr.Code != "precondition_failed" || toolErr.Retryable {
+				t.Fatalf("error = %#v", err)
+			}
+			if got := toolErr.Data["field"]; got != "confirm" {
+				t.Fatalf("precondition field = %#v, want confirm", got)
+			}
+			if requests != 0 {
+				t.Fatalf("missing confirmation made %d HTTP requests", requests)
+			}
+		})
+	}
+}
+
+func TestAccountAdministrationToolsRejectOmittedTransitionsWithoutHTTP(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+		body string
+		want string
+	}{
+		{
+			name: "profile before", tool: "instagram_update_profile_fields", want: "before",
+			body: `{"expected_account_id":"viewer","after":{"full_name":"Name","biography":"Bio","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "profile after", tool: "instagram_update_profile_fields", want: "after",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Bio","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "privacy before", tool: "instagram_set_privacy", want: "before",
+			body: `{"expected_account_id":"viewer","after":false,"confirm":true}`,
+		},
+		{
+			name: "privacy after", tool: "instagram_set_privacy", want: "after",
+			body: `{"expected_account_id":"viewer","before":false,"confirm":true}`,
+		},
+		{
+			name: "professional before", tool: "instagram_update_professional_settings", want: "before",
+			body: `{"expected_account_id":"viewer","after":{"category_id":"1001","display_category":false},"confirm":true}`,
+		},
+		{
+			name: "professional after", tool: "instagram_update_professional_settings", want: "after",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":false},"confirm":true}`,
+		},
+		{
+			name: "profile nested before full_name", tool: "instagram_update_profile_fields", want: "before.full_name",
+			body: `{"expected_account_id":"viewer","before":{"biography":"Before","external_url":""},"after":{"full_name":"Name","biography":"After","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "profile nested before biography", tool: "instagram_update_profile_fields", want: "before.biography",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","external_url":""},"after":{"full_name":"Name","biography":"After","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "profile nested before external_url", tool: "instagram_update_profile_fields", want: "before.external_url",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Before"},"after":{"full_name":"Name","biography":"After","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "profile nested after full_name", tool: "instagram_update_profile_fields", want: "after.full_name",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Before","external_url":""},"after":{"biography":"After","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "profile nested after biography", tool: "instagram_update_profile_fields", want: "after.biography",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Before","external_url":""},"after":{"full_name":"Name","external_url":""},"confirm":true}`,
+		},
+		{
+			name: "profile nested after external_url", tool: "instagram_update_profile_fields", want: "after.external_url",
+			body: `{"expected_account_id":"viewer","before":{"full_name":"Name","biography":"Before","external_url":""},"after":{"full_name":"Name","biography":"After"},"confirm":true}`,
+		},
+		{
+			name: "professional nested before category_id", tool: "instagram_update_professional_settings", want: "before.category_id",
+			body: `{"expected_account_id":"viewer","before":{"display_category":true},"after":{"category_id":"1001","display_category":false},"confirm":true}`,
+		},
+		{
+			name: "professional nested before display_category", tool: "instagram_update_professional_settings", want: "before.display_category",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001"},"after":{"category_id":"1001","display_category":false},"confirm":true}`,
+		},
+		{
+			name: "professional nested after category_id", tool: "instagram_update_professional_settings", want: "after.category_id",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":true},"after":{"display_category":false},"confirm":true}`,
+		},
+		{
+			name: "professional nested after display_category", tool: "instagram_update_professional_settings", want: "after.display_category",
+			body: `{"expected_account_id":"viewer","before":{"category_id":"1001","display_category":true},"after":{"category_id":"1001"},"confirm":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				requests++
+				return mcpJSONResponse(req, http.StatusOK, `{}`), nil
+			})
+			_, err := findTool(t, tt.tool).Invoke(context.Background(), client, json.RawMessage(tt.body))
+			var toolErr *mcptool.Error
+			if !errors.As(err, &toolErr) || toolErr.Code != "precondition_failed" || toolErr.Retryable {
+				t.Fatalf("error = %#v", err)
+			}
+			if got := toolErr.Data["field"]; got != tt.want {
+				t.Fatalf("precondition field = %#v, want %q", got, tt.want)
+			}
+			if requests != 0 {
+				t.Fatalf("omitted transition made %d HTTP requests", requests)
+			}
+		})
+	}
+}
+
+func TestAccountAdministrationReadToolsReturnStructuredIdentityErrors(t *testing.T) {
+	tests := []struct {
+		name, body, code string
+		status           int
+	}{
+		{name: "expired credentials", status: http.StatusUnauthorized, body: `{"message":"login_required","status":"fail"}`, code: "credential_expired"},
+		{name: "challenge", status: http.StatusOK, body: `{"message":"challenge_required","status":"fail"}`, code: "challenge_required"},
+		{name: "account mismatch", status: http.StatusOK, body: `{"user":{"pk":"other","username":"burner","full_name":"","biography":"","external_url":"","is_private":true,"is_professional_account":false,"is_business":false,"account_type":1,"category_id":"0","category_name":"","should_show_category":false},"status":"ok"}`, code: "account_mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				return mcpJSONResponse(req, tt.status, tt.body), nil
+			})
+			_, err := findTool(t, "instagram_get_current_account").Invoke(context.Background(), client, json.RawMessage(`{}`))
+			var toolErr *mcptool.Error
+			if !errors.As(err, &toolErr) || toolErr.Code != tt.code || toolErr.Retryable {
+				t.Fatalf("error = %#v", err)
+			}
+		})
+	}
+}
+
 type mcpRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn mcpRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
