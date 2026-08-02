@@ -170,6 +170,25 @@ func TestSearchReelsMapsFixtureAndMobileContract(t *testing.T) {
 	}
 }
 
+func TestSearchReelsRejectsCursorWithoutHTTP(t *testing.T) {
+	var requests int
+	c := newDiscoveryClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		return jsonResponse(req, http.StatusOK, []byte(`{"reels_serp_modules":[],"status":"ok"}`)), nil
+	})
+
+	it := c.SearchReels(" coffee ").WithCursor("unproven-reels-cursor")
+	if it.Next(context.Background()) {
+		t.Fatal("SearchReels accepted a continuation cursor")
+	}
+	if err := it.Err(); err == nil || !strings.Contains(err.Error(), "invalid cursor") {
+		t.Fatalf("SearchReels cursor error = %v, want invalid cursor", err)
+	}
+	if requests != 0 {
+		t.Fatalf("SearchReels cursor validation made %d HTTP requests, want zero", requests)
+	}
+}
+
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("testdata", name))
