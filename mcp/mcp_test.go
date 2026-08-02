@@ -64,6 +64,73 @@ func TestToolsHaveInstagramPrefix(t *testing.T) {
 	}
 }
 
+func TestAccountAdministrationToolsAreNarrowAndConfirmed(t *testing.T) {
+	readTools := []string{
+		"instagram_get_current_account", "instagram_get_account_settings", "instagram_get_professional_account_state",
+	}
+	for _, name := range readTools {
+		if tool := findTool(t, name); tool.WrapsMethod == "" {
+			t.Fatalf("%s is not registered", name)
+		}
+	}
+	for _, name := range []string{
+		"instagram_update_profile_fields", "instagram_set_privacy", "instagram_update_professional_settings",
+	} {
+		tool := findTool(t, name)
+		properties, ok := tool.InputSchema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties = %#v", name, tool.InputSchema["properties"])
+		}
+		for _, field := range []string{"expected_account_id", "before", "after", "confirm"} {
+			if _, ok := properties[field]; !ok {
+				t.Errorf("%s schema lacks %q", name, field)
+			}
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		for _, forbidden := range []string{"password", "email", "phone", "two_factor", "deactivation", "deletion", "ownership"} {
+			if strings.Contains(strings.ToLower(string(raw)), forbidden) {
+				t.Errorf("%s schema contains excluded capability %q: %s", name, forbidden, raw)
+			}
+		}
+	}
+}
+
+func TestAccountAdministrationToolsReturnStructuredSafetyErrors(t *testing.T) {
+	client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+		return mcpJSONResponse(req, http.StatusOK, `{}`), nil
+	})
+	_, err := findTool(t, "instagram_set_privacy").Invoke(context.Background(), client, json.RawMessage(`{
+		"expected_account_id":"viewer","before":true,"after":false,"confirm":false
+	}`))
+	var toolErr *mcptool.Error
+	if !errors.As(err, &toolErr) || toolErr.Code != "precondition_failed" || toolErr.Retryable {
+		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestAccountAdministrationReadToolsReturnStructuredIdentityErrors(t *testing.T) {
+	tests := []struct {
+		name, body, code string
+		status           int
+	}{
+		{name: "expired credentials", status: http.StatusUnauthorized, body: `{"message":"login_required","status":"fail"}`, code: "credential_expired"},
+		{name: "challenge", status: http.StatusOK, body: `{"message":"challenge_required","status":"fail"}`, code: "challenge_required"},
+		{name: "account mismatch", status: http.StatusOK, body: `{"user":{"pk":"other","username":"burner","full_name":"","biography":"","external_url":"","is_private":true,"is_professional_account":false,"is_business":false,"account_type":1,"category_id":"0","category_name":"","should_show_category":false},"status":"ok"}`, code: "account_mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newMCPClient(t, func(req *http.Request) (*http.Response, error) {
+				return mcpJSONResponse(req, tt.status, tt.body), nil
+			})
+			_, err := findTool(t, "instagram_get_current_account").Invoke(context.Background(), client, json.RawMessage(`{}`))
+			var toolErr *mcptool.Error
+			if !errors.As(err, &toolErr) || toolErr.Code != tt.code || toolErr.Retryable {
+				t.Fatalf("error = %#v", err)
+			}
+		})
+	}
+}
+
 type mcpRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn mcpRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

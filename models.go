@@ -250,3 +250,80 @@ type PageOptions struct {
 	// (typically 12-50 depending on the endpoint); 0 uses the endpoint default.
 	Limit int
 }
+
+// ProfileFields is the complete allowlist for profile administration. It
+// intentionally excludes username, email, phone, and every security field.
+type ProfileFields struct {
+	FullName    string `json:"full_name" jsonschema:"required"`
+	Biography   string `json:"biography" jsonschema:"required"`
+	ExternalURL string `json:"external_url" jsonschema:"required"`
+}
+
+// CurrentAccount is the safe identity/profile projection of the authenticated
+// account response. Contact and security data are never retained.
+type CurrentAccount struct {
+	AccountID      string        `json:"account_id"`
+	Username       string        `json:"username"`
+	Profile        ProfileFields `json:"profile"`
+	IsPrivate      bool          `json:"is_private"`
+	IsProfessional bool          `json:"is_professional"`
+	AccountType    int           `json:"account_type"`
+}
+
+// AccountSettings contains the reversible settings approved for mutation.
+type AccountSettings struct {
+	AccountID string        `json:"account_id"`
+	Profile   ProfileFields `json:"profile"`
+	IsPrivate bool          `json:"is_private"`
+}
+
+// ProfessionalSettings is the narrow professional-display allowlist. It does
+// not permit account conversion, contact changes, ownership, or security work.
+type ProfessionalSettings struct {
+	CategoryID      string `json:"category_id" jsonschema:"required"`
+	DisplayCategory bool   `json:"display_category" jsonschema:"required"`
+}
+
+// ProfessionalAccountState describes professional status and its reversible
+// display settings. IsProfessional and AccountType are read-only.
+type ProfessionalAccountState struct {
+	AccountID      string               `json:"account_id"`
+	IsProfessional bool                 `json:"is_professional"`
+	IsBusiness     bool                 `json:"is_business"`
+	AccountType    int                  `json:"account_type"`
+	CategoryName   string               `json:"category_name,omitempty"`
+	Settings       ProfessionalSettings `json:"settings"`
+}
+
+// UpdateProfileFieldsParams requires a complete before/after pair and an
+// explicit confirmation. ExpectedAccountID binds the operation to one account.
+type UpdateProfileFieldsParams struct {
+	ExpectedAccountID string        `json:"expected_account_id" jsonschema:"required"`
+	Before            ProfileFields `json:"before" jsonschema:"required"`
+	After             ProfileFields `json:"after" jsonschema:"required"`
+	Confirm           bool          `json:"confirm" jsonschema:"required"`
+}
+
+// SetPrivacyParams guards one public/private transition.
+type SetPrivacyParams struct {
+	ExpectedAccountID string `json:"expected_account_id" jsonschema:"required"`
+	Before            bool   `json:"before" jsonschema:"required"`
+	After             bool   `json:"after" jsonschema:"required"`
+	Confirm           bool   `json:"confirm" jsonschema:"required"`
+}
+
+// UpdateProfessionalSettingsParams guards reversible display-only settings.
+type UpdateProfessionalSettingsParams struct {
+	ExpectedAccountID string               `json:"expected_account_id" jsonschema:"required"`
+	Before            ProfessionalSettings `json:"before" jsonschema:"required"`
+	After             ProfessionalSettings `json:"after" jsonschema:"required"`
+	Confirm           bool                 `json:"confirm" jsonschema:"required"`
+}
+
+// AccountMutationResult records the verified state transition.
+type AccountMutationResult[T any] struct {
+	AccountID string `json:"account_id"`
+	Before    T      `json:"before"`
+	After     T      `json:"after"`
+	Verified  bool   `json:"verified"`
+}
