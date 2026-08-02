@@ -480,9 +480,6 @@ func (c *Client) waitForProcessing(ctx context.Context, media preparedUpload) er
 			return err
 		}
 		state := strings.ToLower(strings.TrimSpace(response.ProcessingInfo.State))
-		if state == "" {
-			state = strings.ToLower(strings.TrimSpace(response.Status))
-		}
 		switch state {
 		case "ok", "ready", "finished", "complete", "completed", "succeeded", "uploaded":
 			return nil

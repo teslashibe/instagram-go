@@ -338,6 +338,7 @@ func TestPublishingClassifiesProcessingFailureAndTimeout(t *testing.T) {
 	}{
 		{name: "failed", statusBody: `{"status":"ok","processing_info":{"state":"failed"}}`, timeout: time.Second, want: ErrProcessingFailed},
 		{name: "timeout", statusBody: `{"status":"ok","processing_info":{"state":"processing"}}`, timeout: 5 * time.Millisecond, want: ErrProcessingTimeout},
+		{name: "missing processing state", statusBody: `{"status":"ok"}`, timeout: time.Second, want: ErrUnexpectedResponse},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
