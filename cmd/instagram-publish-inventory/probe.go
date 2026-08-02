@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -272,6 +273,12 @@ func inspectPublishingEntry(entry harEntry) (inspectedPublishingEntry, bool, err
 	}
 	stage := publishingStage(u.Path)
 	if stage == "" {
+		if isPotentialPublishingRequest(entry.Request.Method, u) {
+			return inspectedPublishingEntry{}, false, fmt.Errorf(
+				"unrecognized publishing request %s %s://%s%s; refusing to claim a complete contract",
+				strings.ToUpper(entry.Request.Method), u.Scheme, u.Host, u.EscapedPath(),
+			)
+		}
 		return inspectedPublishingEntry{}, false, nil
 	}
 	if stage == "photo_upload" && strings.HasSuffix(strings.TrimRight(u.Path, "/"), "_0") {
@@ -296,10 +303,14 @@ func inspectPublishingEntry(entry harEntry) (inspectedPublishingEntry, bool, err
 	var decoded any
 	response := map[string]any{}
 	if len(responseRaw) > 0 {
-		if err := json.Unmarshal(responseRaw, &decoded); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(string(responseRaw)))
+		decoder.UseNumber()
+		if err := decoder.Decode(&decoded); err != nil {
 			if stage != "delete_confirmation" {
 				return inspectedPublishingEntry{}, false, fmt.Errorf("%s response JSON: %w", stage, err)
 			}
+		} else if err := requireJSONEOF(decoder); err != nil {
+			return inspectedPublishingEntry{}, false, fmt.Errorf("%s response JSON: %w", stage, err)
 		} else if object, ok := decoded.(map[string]any); ok {
 			response = object
 		}
@@ -366,6 +377,9 @@ func validatePublishingSurface(kind string, item *inspectedPublishingEntry) erro
 		if err := decoder.Decode(&item.ruploadParams); err != nil {
 			return fmt.Errorf("decode X-Instagram-Rupload-Params: %w", err)
 		}
+		if err := requireJSONEOF(decoder); err != nil {
+			return fmt.Errorf("decode X-Instagram-Rupload-Params: %w", err)
+		}
 		item.surface.RuploadParamFields = sortedMapKeys(item.ruploadParams)
 		if err := requireNames(item.surface.RuploadParamFields, []string{
 			"media_type", "upload_id", "upload_media_height", "upload_media_width", "xsharing_user_ids",
@@ -422,7 +436,7 @@ func validatePublishingSurface(kind string, item *inspectedPublishingEntry) erro
 		if strings.TrimSpace(item.headers["x-entity-name"]) != wantEntityName {
 			return errors.New("X-Entity-Name is not correlated with the captured upload_id")
 		}
-		if ack := statusString(item.response, "upload_id"); ack != "" && ack != item.uploadID {
+		if ack := mapString(item.response, "upload_id"); ack != "" && ack != item.uploadID {
 			return errors.New("rupload response upload_id does not match request")
 		}
 		if !strings.HasSuffix(strings.TrimRight(item.url.Path, "/"), "/"+wantEntityName) {
@@ -572,8 +586,6 @@ func mapString(values map[string]any, key string) string {
 		return strings.TrimSpace(value)
 	case json.Number:
 		return value.String()
-	case float64:
-		return strconv.FormatInt(int64(value), 10)
 	default:
 		return ""
 	}
@@ -611,6 +623,52 @@ func publishingStage(path string) string {
 	default:
 		return ""
 	}
+}
+
+// isPotentialPublishingRequest identifies requests that could be part of the
+// captured mutation protocol but are not understood by publishingStage. A HAR
+// may contain unrelated reads and telemetry, so those remain ignorable. Upload,
+// processing, and configure paths are always relevant; unknown mutations under
+// media/clip/story surfaces are also relevant because silently dropping one
+// could make an incomplete protocol look complete.
+func isPotentialPublishingRequest(method string, u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	path := strings.ToLower(u.Path)
+	for _, marker := range []string{"rupload", "upload", "configure", "processing", "publish"} {
+		if strings.Contains(path, marker) {
+			return true
+		}
+	}
+	method = strings.ToUpper(strings.TrimSpace(method))
+	mutating := method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+	if !mutating {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "instagram.com" && !strings.HasSuffix(host, ".instagram.com") {
+		return false
+	}
+	for _, prefix := range []string{
+		"/api/v1/media/", "/api/v1/clips/", "/api/v1/story/", "/api/v1/stories/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 func requestFormValues(entry harEntry) url.Values {
@@ -665,8 +723,6 @@ func nestedString(object map[string]any, path ...string) string {
 		return strings.TrimSpace(value)
 	case json.Number:
 		return value.String()
-	case float64:
-		return fmt.Sprintf("%.0f", value)
 	default:
 		return ""
 	}

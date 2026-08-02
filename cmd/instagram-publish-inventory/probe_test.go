@@ -212,6 +212,55 @@ func TestPublishingInventoryRequiresPhotoStatusContract(t *testing.T) {
 	}
 }
 
+func TestPublishingInventoryRejectsUnknownPublishingRequest(t *testing.T) {
+	t.Parallel()
+	entries := completeFlowEntries("reel")
+	unknown := entry("POST", "/api/v1/media/upload_segments/", nil,
+		formPostData("upload_id=123456789"), 200, `{"status":"ok"}`)
+	request(unknown)["url"] = "https://www.instagram.com/api/v1/media/upload_segments/"
+	entries = append(entries[:3], append([]map[string]any{unknown}, entries[3:]...)...)
+
+	_, err := inspectPublishingHAR("reel", writeHAR(t, entries))
+	if err == nil || !strings.Contains(err.Error(), "unrecognized publishing request") {
+		t.Fatalf("error = %v, want unknown publishing request rejection", err)
+	}
+}
+
+func TestPublishingInventoryIgnoresUnrelatedHARRequests(t *testing.T) {
+	t.Parallel()
+	entries := completeFlowEntries("photo")
+	unrelated := entry("GET", "/api/v1/accounts/current_user/", nil, nil,
+		200, `{"status":"ok","user":{"pk":"42"}}`)
+	entries = append([]map[string]any{unrelated}, entries...)
+	if _, err := inspectPublishingHAR("photo", writeHAR(t, entries)); err != nil {
+		t.Fatalf("unrelated request rejected: %v", err)
+	}
+}
+
+func TestPublishingInventoryCorrelatesLargeNumericMediaIDsLosslessly(t *testing.T) {
+	t.Parallel()
+	const mediaID = "9007199254740993123"
+	entries := completeFlowEntries("photo")
+	responseContent(entries[2])["text"] = `{"status":"ok","media":{"pk":` + mediaID + `}}`
+	request(entries[3])["url"] = "https://i.instagram.com/api/v1/media/" + mediaID + "/delete/"
+	request(entries[4])["url"] = "https://i.instagram.com/api/v1/media/" + mediaID + "/info/"
+
+	if _, err := inspectPublishingHAR("photo", writeHAR(t, entries)); err != nil {
+		t.Fatalf("large numeric media ID lost precision: %v", err)
+	}
+}
+
+func TestPublishingInventoryValidatesNumericUploadAcknowledgement(t *testing.T) {
+	t.Parallel()
+	entries := completeFlowEntries("photo")
+	responseContent(entries[0])["text"] = `{"status":"ok","upload_id":123456790}`
+
+	_, err := inspectPublishingHAR("photo", writeHAR(t, entries))
+	if err == nil || !strings.Contains(err.Error(), "response upload_id does not match") {
+		t.Fatalf("error = %v, want numeric upload acknowledgement mismatch", err)
+	}
+}
+
 func TestWriteAtomicRefusesPublishingCaptureOverwrite(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "capture.md")

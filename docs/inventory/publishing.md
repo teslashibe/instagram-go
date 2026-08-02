@@ -62,7 +62,11 @@ The capture tool validates:
 
 Generic `status=ok` responses, incorrect methods/hosts, unknown states,
 uncorrelated IDs, incorrect delete types, and unconfirmed cleanup all fail
-closed. Generated reports retain methods, redacted paths, status codes, request
+closed. So do unrecognized upload/configure/processing requests and unknown
+mutations under Instagram media, clip, or Story paths; unrelated reads and
+telemetry may remain in the HAR. JSON numbers are preserved lexically so
+Instagram IDs above 2^53 cannot be rounded during correlation. Generated
+reports retain methods, redacted paths, status codes, request
 header/form/query and embedded-rupload names, safe fixed protocol values,
 redacted dynamic-value shapes, response field paths, processing-state enums,
 and delete-type enums. They never retain credential values, binary bodies,
@@ -86,8 +90,10 @@ and processing deadlines.
 
 ## Safety and live verification
 
-`TestIntegration_PublishDisposableBurnerMedia` is one serial, opt-in test and
-skips while `PublishingCaptureVersion` is empty. It requires
+`TestIntegration_PublishDisposableBurnerMedia` is one serial, opt-in test. It
+skips when live verification is not requested, but fails rather than silently
+skipping if `IG_PUBLISH_LIVE_TEST=1` is set while
+`PublishingCaptureVersion` is empty. It requires
 `IG_PUBLISH_LIVE_TEST=1`,
 `IG_PUBLISH_BURNER_ACK=DISPOSABLE_BURNER_CONTENT`, burner cookies, and five
 disposable asset paths.

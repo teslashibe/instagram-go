@@ -25,7 +25,10 @@ unavailable. It also validates and reports the embedded rupload field set,
 mobile request-profile values, entity value shapes, finish/configure constants,
 Reel flags, and Story configure values used by the SDK. Photo capture includes
 its status request; Reel and video Story captures include both pending and ready
-processing observations.
+processing observations. Unknown upload/configure/processing requests and
+unrecognized mutations under Instagram media, clip, or Story paths reject the
+capture instead of being silently omitted. Numeric IDs are decoded losslessly,
+including values larger than JavaScript's safe-integer range.
 
 HARs, cookies, binary content, captions, and IDs must remain outside the
 repository. Reports retain only safe constants and redacted shapes for dynamic

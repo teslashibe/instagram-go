@@ -19,7 +19,7 @@ func TestIntegration_PublishDisposableBurnerMedia(t *testing.T) {
 		t.Skip("set IG_PUBLISH_LIVE_TEST=1 for burner publishing verification")
 	}
 	if instagram.PublishingCaptureVersion == "" {
-		t.Skip("publishing remains fail-closed until a reviewed live burner capture is committed")
+		t.Fatal("IG_PUBLISH_LIVE_TEST=1 requested live verification, but no reviewed publishing capture is compiled in")
 	}
 	if os.Getenv("IG_PUBLISH_BURNER_ACK") != "DISPOSABLE_BURNER_CONTENT" {
 		t.Fatal("IG_PUBLISH_BURNER_ACK=DISPOSABLE_BURNER_CONTENT is required")
