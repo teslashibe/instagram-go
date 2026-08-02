@@ -18,13 +18,16 @@ device identifiers, raw payloads, and CDN URLs.
 
 The verifier accepts a read contract only when `inbox.threads` is non-empty,
 the selected path ID appears specifically at `inbox.threads[].thread_id`, the
-thread response repeats that ID and contains typed items, and both responses
-prove continuation with boolean `has_older=true` plus a non-empty
-`oldest_cursor`. Unrelated nested `thread_id` values cannot establish inbox
-ownership. It accepts write evidence only when the thread creation contains
-exactly one recipient, the approved and confirmed burner/self IDs match that
-recipient, and broadcast targets the exact `thread.thread_id` returned by
-creation with non-empty text and stable idempotency fields.
+thread response repeats that ID and contains typed items, and both first-page
+responses expose boolean `has_older=true` plus a non-empty `oldest_cursor`.
+For each read surface, a successful subsequent GET must supply a `cursor`
+exactly equal to that preceding `oldest_cursor`; response fields alone are not
+accepted as proof of the request contract. Unrelated nested `thread_id` values
+cannot establish inbox ownership. It accepts write evidence only when the
+thread creation contains exactly one recipient, the approved and confirmed
+burner/self IDs match that recipient, and broadcast targets the exact
+`thread.thread_id` returned by creation with non-empty text and stable
+idempotency fields.
 
 ## Captured endpoints
 

@@ -26,6 +26,7 @@ type directSurface struct {
 	Method           string
 	Host             string
 	Path             string
+	Continuation     bool
 	RequestFields    []string
 	HeaderNames      []string
 	ResponseFields   []string
@@ -103,7 +104,7 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 		return directReport{}, fmt.Errorf("decode HAR: %w", err)
 	}
 
-	found := map[string]capturedDirectEntry{}
+	found := map[string][]capturedDirectEntry{}
 	for _, entry := range doc.Log.Entries {
 		select {
 		case <-ctx.Done():
@@ -115,7 +116,7 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 			return directReport{}, err
 		}
 		if ok {
-			found[name] = captured
+			found[name] = append(found[name], captured)
 		}
 	}
 	for _, name := range []string{"Inbox pagination", "Thread retrieval", "Thread creation", "Text broadcast"} {
@@ -124,18 +125,15 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 		}
 	}
 
-	inboxThreads, err := validateDirectInboxContract(found["Inbox pagination"].body)
+	inbox, inboxContinuation, inboxThreads, err := matchDirectInboxPagination(found["Inbox pagination"])
 	if err != nil {
 		return directReport{}, err
 	}
-	threadID := found["Thread retrieval"].pathID
-	if !contains(inboxThreads, threadID) {
-		return directReport{}, errors.New("thread retrieval did not read a thread from inbox.threads[] in the authenticated viewer's inbox")
-	}
-	if err := validateDirectThreadContract(found["Thread retrieval"].body, threadID); err != nil {
+	thread, threadContinuation, err := matchDirectThreadPagination(found["Thread retrieval"], inboxThreads)
+	if err != nil {
 		return directReport{}, err
 	}
-	create := found["Thread creation"]
+	create := found["Thread creation"][len(found["Thread creation"])-1]
 	recipients := parseJSONStrings(create.form.Get("recipient_users"))
 	if len(recipients) != 1 || recipients[0] != approvedRecipient {
 		return directReport{}, errors.New("thread creation recipient is not the sole explicitly approved burner/self target")
@@ -144,7 +142,7 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 	if !ok || validateNumeric("created thread ID", createdThreadID) != nil {
 		return directReport{}, errors.New("thread creation response contained no thread_id")
 	}
-	broadcast := found["Text broadcast"]
+	broadcast := found["Text broadcast"][len(found["Text broadcast"])-1]
 	if strings.TrimSpace(broadcast.form.Get("text")) == "" {
 		return directReport{}, errors.New("text broadcast contained empty text")
 	}
@@ -169,10 +167,136 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 		now = time.Now
 	}
 	report := directReport{CapturedAt: now().UTC()}
-	for _, name := range []string{"Inbox pagination", "Thread retrieval", "Thread creation", "Text broadcast"} {
-		report.Surfaces = append(report.Surfaces, found[name].surface)
-	}
+	report.Surfaces = append(report.Surfaces,
+		mergeDirectReadSurfaces(inbox.surface, inboxContinuation.surface),
+		mergeDirectReadSurfaces(thread.surface, threadContinuation.surface),
+		create.surface,
+		broadcast.surface,
+	)
 	return report, nil
+}
+
+func matchDirectInboxPagination(entries []capturedDirectEntry) (capturedDirectEntry, capturedDirectEntry, []string, error) {
+	var firstErr error
+	for _, initial := range entries {
+		if initial.form.Get("cursor") != "" {
+			continue
+		}
+		threadIDs, err := validateDirectInboxContract(initial.body)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		cursor, _ := directResponseCursor(initial.body, "inbox")
+		for _, continuation := range entries {
+			if continuation.form.Get("cursor") != cursor {
+				continue
+			}
+			if err := validateDirectContinuation(continuation.body, "inbox", "threads", ""); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			return initial, continuation, threadIDs, nil
+		}
+		if firstErr == nil {
+			firstErr = errors.New("inbox pagination did not include a continuation GET whose cursor matched the preceding inbox.oldest_cursor")
+		}
+	}
+	if firstErr != nil {
+		return capturedDirectEntry{}, capturedDirectEntry{}, nil, firstErr
+	}
+	return capturedDirectEntry{}, capturedDirectEntry{}, nil,
+		errors.New("inbox pagination omitted an initial GET without a cursor")
+}
+
+func matchDirectThreadPagination(entries []capturedDirectEntry, inboxThreadIDs []string) (capturedDirectEntry, capturedDirectEntry, error) {
+	var firstErr error
+	for _, initial := range entries {
+		if initial.form.Get("cursor") != "" {
+			continue
+		}
+		if !contains(inboxThreadIDs, initial.pathID) {
+			if firstErr == nil {
+				firstErr = errors.New("thread retrieval did not read a thread from inbox.threads[] in the authenticated viewer's inbox")
+			}
+			continue
+		}
+		if err := validateDirectThreadContract(initial.body, initial.pathID); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		cursor, _ := directResponseCursor(initial.body, "thread")
+		for _, continuation := range entries {
+			if continuation.pathID != initial.pathID || continuation.form.Get("cursor") != cursor {
+				continue
+			}
+			if err := validateDirectContinuation(continuation.body, "thread", "items", initial.pathID); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			return initial, continuation, nil
+		}
+		if firstErr == nil {
+			firstErr = errors.New("thread pagination did not include a continuation GET whose cursor matched the preceding thread.oldest_cursor")
+		}
+	}
+	if firstErr != nil {
+		return capturedDirectEntry{}, capturedDirectEntry{}, firstErr
+	}
+	return capturedDirectEntry{}, capturedDirectEntry{},
+		errors.New("thread retrieval omitted an initial GET without a cursor")
+}
+
+func validateDirectContinuation(body any, containerName, itemsName, threadID string) error {
+	container, ok := nestedObject(body, containerName)
+	if !ok {
+		return fmt.Errorf("%s continuation response omitted %s object", containerName, containerName)
+	}
+	if _, ok := container[itemsName].([]any); !ok {
+		return fmt.Errorf("%s continuation response omitted %s.%s array", containerName, containerName, itemsName)
+	}
+	if threadID != "" {
+		responseThreadID, ok := scalarString(container["thread_id"])
+		if !ok || responseThreadID != threadID {
+			return errors.New("thread continuation response thread.thread_id did not match the requested thread")
+		}
+	}
+	hasOlder, ok := container["has_older"].(bool)
+	if !ok {
+		return fmt.Errorf("%s continuation response omitted boolean %s.has_older", containerName, containerName)
+	}
+	if hasOlder {
+		cursor, ok := scalarString(container["oldest_cursor"])
+		if !ok || strings.TrimSpace(cursor) == "" {
+			return fmt.Errorf("%s continuation response has_older without %s.oldest_cursor", containerName, containerName)
+		}
+	}
+	return nil
+}
+
+func directResponseCursor(body any, containerName string) (string, bool) {
+	container, ok := nestedObject(body, containerName)
+	if !ok {
+		return "", false
+	}
+	return scalarString(container["oldest_cursor"])
+}
+
+func mergeDirectReadSurfaces(initial, continuation directSurface) directSurface {
+	initial.Continuation = true
+	initial.RequestFields = uniqueSorted(append(initial.RequestFields, continuation.RequestFields...))
+	initial.HeaderNames = uniqueSorted(append(initial.HeaderNames, continuation.HeaderNames...))
+	initial.ResponseFields = uniqueSorted(append(initial.ResponseFields, continuation.ResponseFields...))
+	initial.PaginationFields = uniqueSorted(append(initial.PaginationFields, continuation.PaginationFields...))
+	return initial
 }
 
 // validateDirectInboxContract requires the captured inbox response to prove

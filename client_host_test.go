@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -291,6 +292,41 @@ func TestMobileRequestMapsExpiredSessionHTTPError(t *testing.T) {
 	// envelopes still use ErrSessionExpired (covered above).
 	if !errors.Is(err, ErrInvalidAuth) {
 		t.Fatalf("error = %v, want ErrInvalidAuth", err)
+	}
+}
+
+func TestHTTPAuthStatusesPreserveKnownMessageClassification(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+		want    error
+	}{
+		{name: "403 csrf", status: http.StatusForbidden, message: "CSRF token missing or incorrect", want: ErrCSRF},
+		{name: "403 challenge", status: http.StatusForbidden, message: "challenge_required", want: ErrChallengeRequired},
+		{name: "401 challenge", status: http.StatusUnauthorized, message: "checkpoint_required", want: ErrChallengeRequired},
+		{name: "generic 403 remains auth", status: http.StatusForbidden, message: "request rejected", want: ErrInvalidAuth},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(
+						`{"message":` + strconv.Quote(tt.message) + `,"status":"fail"}`,
+					)),
+					Request: req,
+				}, nil
+			})
+			c := newHostTestClient(t, transport)
+			err := c.doJSON(context.Background(), http.MethodPost, "/api/v1/direct_v2/create_group_thread/", nil,
+				&requestOptions{Host: requestHostAPI, IsWrite: true}, nil)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want errors.Is(%v)", err, tt.want)
+			}
+		})
 	}
 }
 

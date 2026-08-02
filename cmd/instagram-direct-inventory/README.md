@@ -6,10 +6,12 @@ never performs a network request or sends a message itself.
 
 The verifier fails closed unless the HAR contains successful contracts for:
 
-- inbox pagination with a non-empty `inbox.threads` collection and proven
-  `has_older`/`oldest_cursor` continuation fields;
+- inbox pagination with a non-empty `inbox.threads` collection, proven
+  `has_older`/`oldest_cursor` continuation fields, and a subsequent GET whose
+  `cursor` exactly matches that `oldest_cursor`;
 - retrieval of that exact `inbox.threads[].thread_id`, with matching response
-  identity, non-empty typed items, and proven thread continuation fields;
+  identity, non-empty typed items, proven thread continuation fields, and a
+  subsequent same-thread GET whose `cursor` matches the prior `oldest_cursor`;
 - one-recipient thread creation for the explicitly approved burner/self ID;
 - non-empty text broadcast to the created thread with matching
   `client_context`/`mutation_token`, an `offline_threading_id`, `status=ok`,

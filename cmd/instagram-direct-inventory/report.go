@@ -17,6 +17,9 @@ func renderDirectReport(report directReport) string {
 	for _, surface := range report.Surfaces {
 		fmt.Fprintf(&b, "## %s\n\n", surface.Name)
 		fmt.Fprintf(&b, "- Request: `%s %s%s`\n", surface.Method, surface.Host, surface.Path)
+		if surface.Continuation {
+			fmt.Fprintln(&b, "- Continuation request: captured with `cursor` equal to the preceding response's `oldest_cursor`")
+		}
 		fmt.Fprintf(&b, "- Request fields: %s\n", markdownList(surface.RequestFields))
 		fmt.Fprintf(&b, "- Header names: %s\n", markdownList(surface.HeaderNames))
 		fmt.Fprintf(&b, "- Pagination fields: %s\n", markdownList(surface.PaginationFields))

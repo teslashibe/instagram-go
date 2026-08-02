@@ -34,14 +34,18 @@ func completeDirectHAR(t *testing.T, threadID, recipientID string) string {
 		}
 	}
 	inbox := `{"inbox":{"threads":[{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `","username":"private-user"}],"items":[{"item_id":"private-item","item_type":"text","text":"private inbox text"}]}],"oldest_cursor":"private-inbox-cursor","has_older":true},"last_seen_at":{"` + recipientID + `":"private-timestamp"},"status":"ok"}`
+	inboxContinuation := `{"inbox":{"threads":[],"has_older":false},"status":"ok"}`
 	thread := `{"thread":{"thread_id":"` + threadID + `","items":[{"item_id":"` + testItemID + `","user_id":"` + recipientID + `","item_type":"text","text":"private thread text"}],"oldest_cursor":"private-thread-cursor","has_older":true},"status":"ok"}`
+	threadContinuation := `{"thread":{"thread_id":"` + threadID + `","items":[],"has_older":false},"status":"ok"}`
 	created := `{"thread":{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `"}]},"status":"ok"}`
 	broadcast := `{"payload":{"item_id":"` + testItemID + `","client_context":"private-context"},"status":"ok"}`
 	createForm := "recipient_users=" + urlEscape(`["`+recipientID+`"]`) + "&_uuid=private-device"
 	broadcastForm := "action=send_item&client_context=private-context&mutation_token=private-context&offline_threading_id=123&text=" + urlEscape("private outbound text") + "&thread_ids=" + urlEscape(`["`+threadID+`"]`)
 	doc := map[string]any{"log": map[string]any{"entries": []any{
 		entry("GET", "https://i.instagram.com/api/v1/direct_v2/inbox/?limit=20", "", inbox),
+		entry("GET", "https://i.instagram.com/api/v1/direct_v2/inbox/?limit=20&cursor=private-inbox-cursor", "", inboxContinuation),
 		entry("GET", "https://i.instagram.com/api/v1/direct_v2/threads/"+threadID+"/?limit=20", "", thread),
+		entry("GET", "https://i.instagram.com/api/v1/direct_v2/threads/"+threadID+"/?limit=20&cursor=private-thread-cursor", "", threadContinuation),
 		entry("POST", "https://i.instagram.com/api/v1/direct_v2/create_group_thread/", createForm, created),
 		entry("POST", "https://i.instagram.com/api/v1/direct_v2/threads/broadcast/text/", broadcastForm, broadcast),
 	}}}
@@ -96,6 +100,11 @@ func TestInspectDirectHARCapturesAllContractsWithoutPrivateValues(t *testing.T) 
 	if len(report.Surfaces) != 4 {
 		t.Fatalf("surfaces=%d", len(report.Surfaces))
 	}
+	for _, surface := range report.Surfaces[:2] {
+		if !surface.Continuation || !contains(surface.RequestFields, "cursor") {
+			t.Fatalf("%s did not retain verified continuation shape: %#v", surface.Name, surface)
+		}
+	}
 	rendered := renderDirectReport(report)
 	for _, secret := range []string{
 		"never-retain-session", "never-retain-csrf", "never-retain-auth",
@@ -106,7 +115,7 @@ func TestInspectDirectHARCapturesAllContractsWithoutPrivateValues(t *testing.T) 
 			t.Fatalf("report leaked %q", secret)
 		}
 	}
-	for _, expected := range []string{"Inbox pagination", "Thread retrieval", "{thread_id}", "{numeric_key}", "recipient_users", "client_context", "$.inbox.oldest_cursor"} {
+	for _, expected := range []string{"Inbox pagination", "Thread retrieval", "{thread_id}", "{numeric_key}", "recipient_users", "client_context", "$.inbox.oldest_cursor", "Continuation request:"} {
 		if !strings.Contains(rendered, expected) {
 			t.Fatalf("report missing %q", expected)
 		}
@@ -119,6 +128,37 @@ func TestInspectDirectHARRejectsUnownedThread(t *testing.T) {
 	_, err := inspectDirectHAR(context.Background(), writeHAR(t, content), testViewerID, testRecipientID, testRecipientID, time.Now)
 	if err == nil || !strings.Contains(err.Error(), "authenticated viewer's inbox") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestInspectDirectHARRequiresCursorMatchedContinuationRequests(t *testing.T) {
+	tests := []struct {
+		name string
+		old  string
+		new  string
+		want string
+	}{
+		{
+			name: "inbox cursor mismatch",
+			old:  "cursor=private-inbox-cursor",
+			new:  "cursor=unrelated-inbox-cursor",
+			want: "inbox pagination did not include a continuation GET",
+		},
+		{
+			name: "thread cursor mismatch",
+			old:  "cursor=private-thread-cursor",
+			new:  "cursor=unrelated-thread-cursor",
+			want: "thread pagination did not include a continuation GET",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := strings.Replace(completeDirectHAR(t, testThreadID, testRecipientID), tt.old, tt.new, 1)
+			_, err := inspectDirectHAR(context.Background(), writeHAR(t, content), testViewerID, testRecipientID, testRecipientID, time.Now)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error=%v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

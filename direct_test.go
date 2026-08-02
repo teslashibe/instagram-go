@@ -332,7 +332,7 @@ func TestDirectWritePreservesChallengeRateAuthAndCSRFSentinels(t *testing.T) {
 		want         error
 		wantCooldown bool
 	}{
-		{name: "challenge", status: http.StatusOK, body: `{"message":"challenge_required","status":"fail"}`, want: ErrChallengeRequired},
+		{name: "challenge", status: http.StatusForbidden, body: `{"message":"challenge_required","status":"fail"}`, want: ErrChallengeRequired},
 		{name: "rate limit", status: http.StatusTooManyRequests, body: `{"message":"Please wait a few minutes","status":"fail"}`, want: ErrRateLimited, wantCooldown: true},
 		{name: "auth", status: http.StatusUnauthorized, body: `{"message":"login_required","status":"fail"}`, want: ErrInvalidAuth},
 		{name: "csrf", status: http.StatusForbidden, body: `{"message":"CSRF token missing or incorrect","status":"fail"}`, want: ErrCSRF},
