@@ -133,14 +133,15 @@ func (c *Client) readAccountContractFromWebForm(ctx context.Context) (accountCon
 			form[key] = json.RawMessage(`""`)
 		}
 	}
-	if _, ok := form["pk_id"]; !ok && c.cookies.DSUserID != "" {
-		raw, _ := json.Marshal(c.cookies.DSUserID)
-		form["pk_id"] = raw
-	}
 	me, err := c.GetProfileByID(ctx, c.cookies.DSUserID)
 	if err != nil {
 		return accountContract{}, fmt.Errorf("web form privacy projection: %w", err)
 	}
+	if err := c.requireAccountID(c.cookies.DSUserID, me.ID); err != nil {
+		return accountContract{}, err
+	}
+	id, _ := json.Marshal(me.ID)
+	form["pk_id"] = id
 	priv, _ := json.Marshal(me.IsPrivate)
 	form["is_private"] = priv
 	if raw, ok := form["business_account"]; ok && string(raw) != "null" {
@@ -497,17 +498,10 @@ func (c *Client) accountWrite(ctx context.Context, path string, form url.Values)
 	if form.Get("_csrftoken") == "" && c.cookies.CSRFToken != "" {
 		form.Set("_csrftoken", c.cookies.CSRFToken)
 	}
-	// Prefer mobile private-API writes when available; browser sessions need the
-	// www write profile (including X-Instagram-AJAX) for the same paths.
-	err := c.doJSON(ctx, http.MethodPost, path, nil, &requestOptions{
-		Host: requestHostAPI, IsWrite: true, NoRetry: true, FormBody: form,
-	}, nil)
-	if err == nil || !accountNeedsWebFormFallback(err) {
-		return err
-	}
+	// Account mutations are single-attempt: a transport/profile fallback could
+	// replay an accepted write whose response was lost or rejected in transit.
 	return c.doJSON(ctx, http.MethodPost, path, nil, &requestOptions{
-		IsWrite: true, NoRetry: true, FormBody: form,
-		Referer: "https://www.instagram.com/accounts/edit/",
+		Host: requestHostAPI, IsWrite: true, NoRetry: true, FormBody: form,
 	}, nil)
 }
 
