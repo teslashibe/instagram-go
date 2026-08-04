@@ -1,6 +1,7 @@
 # instagram-go
 
-A Go client for Instagram's private web/mobile API (`api/v1/*`). Authenticated, stdlib-only,
+A Go client for Instagram's private web/mobile API (`api/v1/*`), plus a separate official Meta
+Graph/Marketing API client for professional insights and advertising. Authenticated, stdlib-only,
 zero production dependencies. Mirrors the conventions of [`x-go`](https://github.com/teslashibe/x-go),
 [`linkedin-go`](https://github.com/teslashibe/linkedin-go), and the rest of the teslashibe scraper family.
 
@@ -13,6 +14,7 @@ import "github.com/teslashibe/instagram-go"
 | Surface              | Read | Write | Tested live |
 |----------------------|:----:|:-----:|:-----------:|
 | Profiles & search    | ✅   | —     | ✅          |
+| Account administration | ✅ | ✅    | (offline; burner opt-in) |
 | Posts / reels / feed | ✅   | ✅    | ✅ (read)   |
 | Comments / likers    | ✅   | ✅    | ✅ (read)   |
 | Followers / friendship| ✅  | ✅    | ✅ (read)   |
@@ -20,12 +22,21 @@ import "github.com/teslashibe/instagram-go"
 | Hashtags             | ✅   | ✅    | ✅ (read)   |
 | Locations            | ✅   | —     | ✅          |
 | Keyword discovery    | ✅   | —     | ✅          |
+| Direct messages      | ✅   | ✅ (text only) | gated burner/self |
+| Photo/Reel/video-Story publishing | — | gated | live burner capture required |
 | Topical explore      | ✅   | —     | (offline)   |
 | Home timeline        | ✅   | —     | (offline)   |
 
 Write endpoints are implemented and shape-checked, but their integration tests are
 disabled by default — Instagram is aggressive about silent soft-blocks on write
 actions from server-side IPs. See [Rate limiting](#rate-limiting) below.
+The typed publishing draft is fail-closed: it cannot perform a mutation until a
+reviewed, date-stamped live burner capture is committed with the matching code.
+See [Publishing](#publishing).
+
+Account-administration writes have an additional fail-closed contract: no raw
+request escape hatch, approved fields only, and an expected account ID plus
+explicit before/after values and confirmation on every call.
 
 ## Install
 
@@ -79,6 +90,20 @@ func main() {
 ```
 
 ## Authentication
+
+This repository has two deliberately separate clients and credential types:
+
+| Client | Package | Credential | Intended capabilities |
+|--------|---------|------------|-----------------------|
+| Private Instagram API | `instagram` (module root) | Browser session cookies | Consumer profiles, feeds, search, social actions |
+| Official Meta Graph API | `instagram/meta` | Facebook Login OAuth bearer token | Professional account/media insights and read-only advertising |
+
+Never put a Meta OAuth token in `Cookies`, and never provide Instagram cookies to
+`meta.New`. The transports, models, errors, and MCP providers are independent.
+See [Official Meta Graph and Marketing API](docs/meta-graph.md) for OAuth scopes,
+token storage, Page linkage, account selection, insight validation, and ad safety.
+
+### Private cookie authentication
 
 Required cookies (export from a logged-in browser session):
 
@@ -227,9 +252,10 @@ query-mismatched cursors fail before an HTTP request is made.
 needed by commenting helpers. It intentionally fetches only the first page: the
 live inventory proved response cursor fields but not their continuation request
 parameters. The iterator shape allows pagination to be added compatibly after a
-continuation request is captured. The `instagram_search_reels` MCP tool follows
-the same terminal contract: `limit` can truncate that first page, but the tool
-does not return a continuation cursor, and it rejects any supplied cursor before
+continuation request is captured; until then, passing a cursor to the iterator
+fails before an HTTP request. The `instagram_search_reels` MCP tool follows the
+same terminal contract: `limit` can truncate that first page, but the tool does
+not return a continuation cursor, and it rejects any supplied cursor before
 making an HTTP request.
 `SearchAccounts` returns the richer account SERP context (including friendship
 and social-context fields), while `SearchTypeaheadUsers` returns the lighter
@@ -275,6 +301,34 @@ suggestions, err := client.KeywordTypeahead(ctx, "specialty cof")
 
 Top SERP ranking is personalized and can change between runs. Durable watches
 should deduplicate results by `Post.PK` (falling back to `Post.Code`).
+
+### Safe account administration
+
+The authenticated account read is projected into three safe models. Raw current
+account responses are not exposed because Instagram may include contact or
+security-adjacent fields alongside editable settings.
+
+| Method | Endpoint |
+| --- | --- |
+| `GetCurrentAccount(ctx)` | `GET i.instagram.com/api/v1/accounts/current_user/?edit=true` |
+| `GetAccountSettings(ctx)` | same captured read, reversible-settings projection |
+| `GetProfessionalAccountState(ctx)` | same captured read, professional-state projection |
+| `UpdateProfileFields(ctx, params)` | `POST i.instagram.com/api/v1/accounts/edit_profile/` |
+| `SetPrivacy(ctx, params)` | `POST i.instagram.com/api/v1/accounts/set_private/` or `set_public/` |
+| `UpdateProfessionalSettings(ctx, params)` | `POST i.instagram.com/api/v1/business/account/edit/` |
+
+Each mutation checks `ExpectedAccountID` against both the authenticated
+`ds_user_id` and a fresh read, requires `Confirm: true`, rejects a no-op or stale
+`Before`, sends exactly one write attempt, and re-reads to verify `After` before
+returning success. Profile mutation is limited to full name, biography, and
+external URL. Professional mutation is limited to category ID and category
+visibility on an account that is already professional.
+
+Password, username/email/phone, public contact details, 2FA,
+deletion/deactivation, account conversion, ownership, and security changes are
+not implemented. The same fields are absent from MCP input schemas. The
+captured contract and burner-only verification protocol are documented in
+[`docs/inventory/account-administration.md`](docs/inventory/account-administration.md).
 
 ### Posts & feeds
 
@@ -333,6 +387,52 @@ should deduplicate results by `Post.PK` (falling back to `Post.Code`).
 | `GetLocationPosts(id)` (iterator)     | `POST /api/v1/locations/{id}/sections/` `tab=recent`    |
 | `GetLocationTopPosts(id)` (iterator)  | `POST /api/v1/locations/{id}/sections/` `tab=ranked`    |
 
+### Instagram Direct
+
+Direct uses the captured mobile `i.instagram.com` request profile. Inbox and
+thread cursors are versioned opaque values; thread-item cursors are bound to the
+selected thread ID and cross-thread replay fails before HTTP.
+
+| Method | Endpoint |
+|---|---|
+| `GetDirectInbox()` (iterator) | `GET /api/v1/direct_v2/inbox/` |
+| `GetDirectThread(threadID)` (iterator) | `GET /api/v1/direct_v2/threads/{thread_id}/` |
+| `SendDirectText(ctx, request)` | `POST /api/v1/direct_v2/create_group_thread/`, then `POST /api/v1/direct_v2/threads/broadcast/text/` |
+
+`SendDirectText` accepts exactly one explicit numeric `RecipientID` and
+non-whitespace text. It creates a cryptographically random `ClientContext` when
+one is not supplied, uses the same value for the mutation token and every
+broadcast retry, and returns it for reconciliation after an uncertain outcome.
+The whole write is bounded to 30 seconds. Thread creation is not automatically
+retried because its idempotency contract has not been proven. If broadcast
+returns an uncertain outcome, retry with `ThreadID`, `ClientContext`, and
+`RetryToken` from `DirectSendError`; this skips thread creation and repeats only
+the idempotent broadcast. The authenticated token binds the resolved thread to
+the explicit recipient and original text, so substituted targets fail before
+HTTP.
+
+```go
+result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{
+    RecipientID: "123456789", // explicitly approved burner/self ID
+    Text:        "hello from the burner acceptance test",
+})
+
+var sendErr *instagram.DirectSendError
+if errors.As(err, &sendErr) && sendErr.ThreadID != "" {
+    result, err = c.SendDirectText(ctx, instagram.DirectTextRequest{
+        RecipientID:   "123456789",
+        Text:          "hello from the burner acceptance test",
+        ThreadID:      sendErr.ThreadID,
+        ClientContext: sendErr.ClientContext,
+        RetryToken:    sendErr.RetryToken,
+    })
+}
+```
+
+Only plain text is supported. Attachments, reactions, vanish mode, and group
+administration remain unsupported until their request and safety contracts are
+captured separately. See the [Direct contract inventory](docs/inventory/direct.md).
+
 ### Write actions
 
 All writes are subject to a stricter rate-limit budget than reads. They share a 12 s
@@ -346,6 +446,78 @@ soft-block. See [Rate limiting](#rate-limiting).
 | Friendship      | `Follow`, `Unfollow`, `Block`, `Unblock`, `MutePosts`, `UnmutePosts`                   |
 | Hashtags        | `FollowHashtag`, `UnfollowHashtag`                                                     |
 | Stories         | `MarkStorySeen`                                                                        |
+| Direct          | `SendDirectText` (one explicit recipient; plain text only)                             |
+
+## Publishing
+
+`PublishPhoto`, `PublishReel`, and `PublishStory` define a typed
+`UploadSource`: an `io.Reader` plus exact filename, MIME type, byte length,
+dimensions, and video duration. Each call also requires an idempotency key,
+which is combined with the bounded content hash and metadata to derive stable
+upload/client IDs.
+
+No reviewed live publishing capture is currently committed, so
+`PublishingCaptureVersion` is empty and every SDK method returns
+`ErrPublishingCaptureRequired` before reading the stream or making an HTTP
+request. The MCP tools similarly return `publishing_capture_required`. This is
+the capture-before-publishing gate required for Instagram's rotating private
+protocol.
+
+```go
+file, _ := os.Open("disposable.jpg")
+info, _ := file.Stat()
+result, err := client.PublishPhoto(ctx, instagram.PublishPhotoInput{
+    Media: instagram.UploadSource{
+        Reader: file, Filename: info.Name(), MIMEType: "image/jpeg",
+        Size: info.Size(), Width: 1080, Height: 1350,
+    },
+    Caption: "disposable burner photo",
+    IdempotencyKey: "my-operation-123",
+})
+```
+
+After the capture gate is satisfied, photos default to a 25 MiB decoded limit
+and videos to 100 MiB. Raw upload
+requests have a two-minute deadline, video processing has a separate two-minute
+deadline, and upload bodies are never blindly replayed. Override conservative
+SDK bounds with `WithPublishingLimits` and `WithPublishingTimeouts`.
+
+The draft failure model includes `ErrFeedbackRequired`, `ErrProcessingFailed`,
+`ErrProcessingTimeout`, `ErrPartialUpload`, or `ErrUploadTooLarge` in addition
+to the existing challenge/rate/write sentinels. `DeleteMedia` accepts the exact
+caller-supplied media ID plus the returned `PublishedMediaKind`, reproduces the
+per-kind deletion discriminator, and is intended only for deliberate burner
+cleanup. It does not enumerate account data and is excluded from MCP.
+
+Instagram's private publishing protocol can rotate. The redaction command,
+current contract status, capture procedure, and safety boundary are documented
+in [`docs/inventory/publishing.md`](docs/inventory/publishing.md). Live
+publishing verification is intentionally opt-in and requires disposable assets:
+
+```bash
+IG_PUBLISH_LIVE_TEST=1 \
+IG_PUBLISH_BURNER_ACK=DISPOSABLE_BURNER_CONTENT \
+IG_PUBLISH_PHOTO_PATH=/secure/disposable.jpg \
+IG_PUBLISH_REEL_PATH=/secure/disposable.mp4 \
+IG_PUBLISH_REEL_THUMBNAIL_PATH=/secure/reel-thumb.jpg \
+IG_PUBLISH_REEL_DURATION_MS=3000 \
+IG_PUBLISH_STORY_PATH=/secure/story.mp4 \
+IG_PUBLISH_STORY_THUMBNAIL_PATH=/secure/story-thumb.jpg \
+IG_PUBLISH_STORY_DURATION_MS=3000 \
+go test -v -run '^TestIntegration_PublishDisposableBurnerMedia$' .
+```
+
+Once a capture is compiled in, the test registers each returned ID for exact-ID
+cleanup before verifying it, then reads that exact ID back after deletion until
+Instagram confirms it is unavailable. It never lists or removes unrelated
+account media.
+
+Unsupported until separately captured and burner-verified: photo Stories,
+carousels, licensed
+music selection, stickers, structured mentions/tags, locations,
+collaboration/paid-partnership invitations, and scheduling. Plain caption text
+will publish immediately once the capture gate is enabled; embedded Reel audio
+remains original upload audio.
 
 ## Pagination
 
@@ -429,10 +601,19 @@ All errors wrap one of the package sentinels — match with `errors.Is`:
 | `ErrRateLimited`        | 429, `wait a few minutes`, or 302→login on a validated session  |
 | `ErrWriteSoftBlock`     | 302→login on a write action; read session still works           |
 | `ErrChallengeRequired`  | Account flagged for security checkpoint                         |
+| `ErrFeedbackRequired`   | `feedback_required`; also trips the write cooldown                |
+| `ErrProcessingFailed`   | Uploaded media reached a captured terminal processing failure     |
+| `ErrProcessingTimeout`  | Media did not become ready before the bounded processing deadline |
+| `ErrPartialUpload`      | A prior stage may have accepted bytes; do not change idempotency key |
+| `ErrUploadTooLarge`     | Declared or streamed bytes exceeded a local upload limit          |
+| `ErrInvalidPublishInput`| Publishing metadata or stream length failed local validation      |
+| `ErrPublishingCaptureRequired` | No reviewed live burner protocol is compiled in; no mutation occurred |
 | `ErrNotFound`           | 404 or `user_not_found` response                                |
 | `ErrPrivateAccount`     | Resource belongs to a private account viewer doesn't follow     |
 | `ErrMediaUnavailable`   | Post deleted or hidden                                          |
 | `ErrCSRF`               | CSRF token rejected on a write                                  |
+| `ErrAccountMismatch`    | Authenticated account differs from the requested target         |
+| `ErrMutationPrecondition` | Confirmation, before-state, no-op, or verification failed      |
 | `ErrUnexpectedResponse` | Well-formed JSON missing the expected fields                    |
 
 For non-2xx HTTP responses, the wrapped error is also an `*APIError` with
@@ -489,15 +670,41 @@ go test -v -count=1 -run '^TestIntegration_GetPosts$' .
 # ...
 ```
 
+Account-administration smoke tests have stronger guards and must use a dedicated
+burner. Each test registers cleanup before writing and verifies restoration:
+
+```bash
+export INSTAGRAM_ACCOUNT_ADMIN_LIVE_TEST=1
+export INSTAGRAM_ACCOUNT_ADMIN_BURNER_ID="$IG_DS_USER_ID"
+export INSTAGRAM_ACCOUNT_ADMIN_CONFIRM='RESTORE_BURNER_SETTINGS'
+go test -v -count=1 -run '^TestIntegration_AccountAdmin_ProfileRestoresBurner$' .
+```
+
+Run one administration smoke test at a time. Privacy and professional-display
+test names are listed in the account-administration inventory document.
+
 ## MCP support
 
 This package ships an [MCP](https://modelcontextprotocol.io/) tool surface in
 `./mcp` for use with [`teslashibe/mcptool`](https://github.com/teslashibe/mcptool)-compatible
 hosts (e.g. [`teslashibe/agent-setup`](https://github.com/teslashibe/agent-setup)).
-52 tools cover the full client API: profile lookup and search, post/reel/timeline/explore
+64 tools cover the full client API: profile lookup and search, safe account
+administration, post/reel/timeline/explore
 feeds, comments and likes, followers/following and friendship reads + writes
 (follow/unfollow/block/mute), hashtag and location reads + follow/unfollow,
-stories and highlights, blended top-search, and keyword post/reel search.
+stories and highlights, blended top-search, keyword post/reel search, and
+Direct inbox/thread reads plus separately tagged confirmed Direct and
+fail-closed photo/Reel/video-Story publishing writes.
+
+The Direct MCP tools are `instagram_get_direct_inbox`,
+`instagram_get_direct_thread`, and `instagram_send_direct_text`. The send tool
+alone is tagged `write` and requires `recipient_id`, non-empty `text`, and
+`confirm_send=true`; hosts can therefore put mutation confirmation around it
+without classifying the read tools as writes. Direct auth, challenge, rate
+limit, CSRF, timeout, and incomplete-send failures are returned as structured
+tool errors. An uncertain broadcast returns `thread_id`, `client_context`, and
+an authenticated `retry_token`; supplying all three on the next confirmed call
+retries only the broadcast after verifying the recipient and text binding.
 
 ```go
 import (
@@ -518,6 +725,12 @@ A coverage test in `mcp/mcp_test.go` fails if a new exported method is added
 to `*Client` without either being wrapped by an MCP tool or being added to
 `mcp.Excluded` with a reason — keeping the MCP surface in lockstep with the
 package API is enforced by CI rather than convention.
+
+Publishing tools are separately tagged `write`, `publishing`, and `mutation`.
+They require `confirm_mutation: true`, accept decoded media only through bounded
+base64 inputs (8 MiB photo/thumbnail, 64 MiB video), and impose a two-minute
+per-call timeout. Missing confirmation, oversized input, or a missing reviewed
+capture fails before any Instagram request.
 
 ## Conventions
 

@@ -1,0 +1,18 @@
+{
+  "data": [
+    {
+      "id": "page-1",
+      "name": "Example Page",
+      "category": "Business",
+      "instagram_business_account": {
+        "id": "ig-1",
+        "username": "example_business",
+        "name": "Example Business"
+      }
+    }
+  ],
+  "paging": {
+    "cursors": {"after": "graph-after-secret"},
+    "next": "https://graph.facebook.com/next"
+  }
+}

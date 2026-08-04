@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,11 +19,12 @@ const (
 )
 
 type recordedRequest struct {
-	method string
-	host   string
-	path   string
-	header http.Header
-	body   string
+	method        string
+	host          string
+	path          string
+	header        http.Header
+	body          string
+	contentLength int64
 }
 
 type recordingTransport struct {
@@ -38,11 +40,12 @@ func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	r.mu.Lock()
 	r.requests = append(r.requests, recordedRequest{
-		method: req.Method,
-		host:   req.URL.Host,
-		path:   req.URL.RequestURI(),
-		header: req.Header.Clone(),
-		body:   string(payload),
+		method:        req.Method,
+		host:          req.URL.Host,
+		path:          req.URL.RequestURI(),
+		header:        req.Header.Clone(),
+		body:          string(payload),
+		contentLength: req.ContentLength,
 	})
 	body := r.responses[req.URL.Host]
 	r.mu.Unlock()
@@ -183,6 +186,40 @@ func TestGraphQLDefaultsToWWWHostAndAllowsTransportHeaders(t *testing.T) {
 	}
 }
 
+func TestRawMobileUploadRequestPreservesBoundedBodyAndHeaders(t *testing.T) {
+	transport := &recordingTransport{responses: map[string]string{
+		"i.instagram.test": `{"status":"ok"}`,
+	}}
+	client := newHostTestClient(t, transport, WithMinWriteGap(0))
+	raw := []byte("jpeg")
+	if _, _, err := client.doRaw(context.Background(), http.MethodPost, "/rupload_igphoto/entity", nil,
+		&requestOptions{
+			Host: requestHostAPI, IsWrite: true, RawBody: raw,
+			ContentLength: int64(len(raw)), MaxAttempts: 1,
+			ExtraHeaders: map[string]string{
+				"X-Entity-Type":   "image/jpeg",
+				"X-Entity-Length": "4",
+			},
+		}); err != nil {
+		t.Fatal(err)
+	}
+	request := transport.onlyForHost(t, "i.instagram.test")
+	if request.method != http.MethodPost || request.path != "/rupload_igphoto/entity" {
+		t.Fatalf("request = %s %s", request.method, request.path)
+	}
+	if request.body != "jpeg" {
+		t.Fatalf("body = %q", request.body)
+	}
+	assertHeader(t, request.header, "X-Entity-Type", "image/jpeg")
+	assertHeader(t, request.header, "X-Entity-Length", "4")
+	if request.contentLength != 4 {
+		t.Fatalf("content length = %d", request.contentLength)
+	}
+	if request.header.Get("X-IG-WWW-Claim") != "" {
+		t.Fatal("raw mobile upload used web headers")
+	}
+}
+
 func TestMobileRequestMapsExpiredSessionEnvelope(t *testing.T) {
 	transport := &recordingTransport{responses: map[string]string{
 		"i.instagram.test": `{"message":"login_required","status":"fail"}`,
@@ -291,6 +328,41 @@ func TestMobileRequestMapsExpiredSessionHTTPError(t *testing.T) {
 	// envelopes still use ErrSessionExpired (covered above).
 	if !errors.Is(err, ErrInvalidAuth) {
 		t.Fatalf("error = %v, want ErrInvalidAuth", err)
+	}
+}
+
+func TestHTTPAuthStatusesPreserveKnownMessageClassification(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+		want    error
+	}{
+		{name: "403 csrf", status: http.StatusForbidden, message: "CSRF token missing or incorrect", want: ErrCSRF},
+		{name: "403 challenge", status: http.StatusForbidden, message: "challenge_required", want: ErrChallengeRequired},
+		{name: "401 challenge", status: http.StatusUnauthorized, message: "checkpoint_required", want: ErrChallengeRequired},
+		{name: "generic 403 remains auth", status: http.StatusForbidden, message: "request rejected", want: ErrInvalidAuth},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(
+						`{"message":` + strconv.Quote(tt.message) + `,"status":"fail"}`,
+					)),
+					Request: req,
+				}, nil
+			})
+			c := newHostTestClient(t, transport)
+			err := c.doJSON(context.Background(), http.MethodPost, "/api/v1/direct_v2/create_group_thread/", nil,
+				&requestOptions{Host: requestHostAPI, IsWrite: true}, nil)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want errors.Is(%v)", err, tt.want)
+			}
+		})
 	}
 }
 

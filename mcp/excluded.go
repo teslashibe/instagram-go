@@ -11,4 +11,6 @@ package mcp
 //   - prefer to add an MCP tool for it (see users.go / posts.go / etc.)
 //   - if the method is unsuitable for an agent (internal observability,
 //     auth-only helper, etc.), add it here with a reason
-var Excluded = map[string]string{}
+var Excluded = map[string]string{
+	"DeleteMedia": "exact-ID deletion is destructive and reserved for deliberate burner cleanup outside MCP",
+}

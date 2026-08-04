@@ -1,0 +1,18 @@
+{
+  "thread": {
+    "thread_id": "340282366841710300949128199900000000001",
+    "items": [
+      {
+        "item_id": "340282366841710300949128199900000000003",
+        "user_id": "100000000000000001",
+        "item_type": "text",
+        "text": "<redacted>",
+        "timestamp": "1785530000000000",
+        "client_context": "<redacted>"
+      }
+    ],
+    "oldest_cursor": "<redacted-thread-cursor>",
+    "has_older": true
+  },
+  "status": "ok"
+}

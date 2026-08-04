@@ -24,6 +24,13 @@ type requestOptions struct {
 	// IsWrite marks the call as a write action — uses writeGap and is more
 	// strictly classified as soft-blocked when the server redirects.
 	IsWrite bool
+	// NoRetry forces a single network attempt. Account-administration writes use
+	// this because a lost response is ambiguous and replaying could overwrite a
+	// value changed concurrently.
+	NoRetry bool
+	// MaxAttempts overrides the client retry count for this request. A value of
+	// zero uses the client default. Non-idempotent private-API mutations use 1.
+	MaxAttempts int
 	// XReferer overrides the Referer header (some endpoints want a tag/profile URL).
 	Referer string
 	// ExtraHeaders are merged on top of the defaults.
@@ -33,6 +40,16 @@ type requestOptions struct {
 	FormBody url.Values
 	// JSONBody, if non-nil, is sent as application/json.
 	JSONBody any
+	// RawBody, if non-nil, is sent verbatim. Publishing uses this for bounded
+	// rupload requests after reading a caller stream through a strict limit.
+	RawBody []byte
+	// ContentLength sets the request's declared entity length. A negative value
+	// leaves net/http's default behavior unchanged.
+	ContentLength int64
+	// ContextControlsTimeout disables http.Client.Timeout for this request. The
+	// caller must supply a bounded context. Publishing uses this so its explicit
+	// upload/processing deadlines are not truncated by the client's 30s default.
+	ContextControlsTimeout bool
 }
 
 type requestHost uint8
@@ -84,7 +101,13 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 	}
 
 	maxAttempts := c.maxRetries
+	if opts.MaxAttempts > 0 {
+		maxAttempts = opts.MaxAttempts
+	}
 	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if opts.NoRetry {
 		maxAttempts = 1
 	}
 
@@ -95,14 +118,22 @@ func (c *Client) doRaw(ctx context.Context, method, path string, q url.Values, o
 		if err := c.waitForCooldownInternal(ctx, opts.IsWrite); err != nil {
 			return nil, nil, err
 		}
-		c.waitForGap(ctx, opts.IsWrite)
+		if err := c.waitForGap(ctx, opts.IsWrite); err != nil {
+			return nil, nil, err
+		}
 
 		req, err := c.buildRequest(ctx, method, u, opts)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		resp, err := c.httpClient.Do(req)
+		httpClient := c.httpClient
+		if opts.ContextControlsTimeout && c.httpClient.Timeout != 0 {
+			clone := *c.httpClient
+			clone.Timeout = 0
+			httpClient = &clone
+		}
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("instagram: http %s %s: %w", method, u, err)
 			if !shouldRetryNetErr(err) || attempt == maxAttempts {
@@ -152,6 +183,8 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		}
 		bodyReader = bytes.NewReader(buf)
 		contentType = "application/json"
+	case opts.RawBody != nil:
+		bodyReader = bytes.NewReader(opts.RawBody)
 	case opts.FormBody != nil:
 		bodyReader = strings.NewReader(opts.FormBody.Encode())
 		contentType = "application/x-www-form-urlencoded"
@@ -207,6 +240,12 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	if opts.RawBody != nil {
+		req.ContentLength = int64(len(opts.RawBody))
+	}
+	if opts.ContentLength > 0 {
+		req.ContentLength = opts.ContentLength
 	}
 
 	for k, v := range opts.ExtraHeaders {
@@ -339,8 +378,10 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 
 	if shaped := decodeStatusFail(body); shaped != nil {
 		mappedErr := c.mapMessage(shaped, resp.StatusCode, method, fullURL, body, isWrite)
-		var genericAPIErr *APIError
-		if !isAuthStatus || !errors.As(mappedErr, &genericAPIErr) {
+		// Known message mappings wrap APIError for HTTP context. Only a direct
+		// *APIError is generic and should fall through to 401/403 auth handling.
+		_, isGenericAPIErr := mappedErr.(*APIError)
+		if !isAuthStatus || !isGenericAPIErr {
 			return body, mappedErr
 		}
 		// A generic status-fail envelope on 401/403 is still an authentication
@@ -375,6 +416,7 @@ func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, ful
 		if retry <= 0 {
 			retry = c.cooldownFor(isWrite)
 		}
+		retry = boundedCooldown(isWrite, retry)
 		c.tripCooldown(isWrite, retry, "HTTP 429")
 		return body, fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, retry, apiErr.Error())
 	}
@@ -502,9 +544,12 @@ func (c *Client) mapKnownMessage(message string, apiErr *APIError, isWrite bool)
 		}
 		c.tripCooldown(isWrite, cd, "feedback_required")
 		if isWrite {
-			return fmt.Errorf("%w: cooldown for %s (%s)", ErrWriteSoftBlock, cd, apiErr.Error()), true
+			return fmt.Errorf("%w: %w: cooldown for %s (%s)", ErrFeedbackRequired, ErrWriteSoftBlock, cd, apiErr.Error()), true
 		}
-		return fmt.Errorf("%w: cooldown for %s (%s)", ErrRateLimited, cd, apiErr.Error()), true
+		return fmt.Errorf("%w: %w: cooldown for %s (%s)", ErrFeedbackRequired, ErrRateLimited, cd, apiErr.Error()), true
+	case strings.Contains(msg, "transcode") || strings.Contains(msg, "processing_failed") ||
+		strings.Contains(msg, "processing failed") || strings.Contains(msg, "media processing error"):
+		return fmt.Errorf("%w: %s", ErrProcessingFailed, apiErr.Error()), true
 	}
 	return nil, false
 }
@@ -578,7 +623,9 @@ func shouldRetryStatus(status int, err error) bool {
 	if errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrWriteSoftBlock) ||
 		errors.Is(err, ErrChallengeRequired) || errors.Is(err, ErrInvalidAuth) ||
 		errors.Is(err, ErrNotFound) || errors.Is(err, ErrPrivateAccount) ||
-		errors.Is(err, ErrMediaUnavailable) || errors.Is(err, ErrCSRF) {
+		errors.Is(err, ErrMediaUnavailable) || errors.Is(err, ErrCSRF) ||
+		errors.Is(err, ErrFeedbackRequired) || errors.Is(err, ErrProcessingFailed) ||
+		errors.Is(err, ErrPartialUpload) {
 		return false
 	}
 	// Once a cooldown is tripped, immediate retries are pointless and would
@@ -611,7 +658,7 @@ func (c *Client) sleepBackoff(ctx context.Context, attempt int) {
 
 // waitForGap blocks until enough time has passed since the last request of
 // the same kind.
-func (c *Client) waitForGap(ctx context.Context, isWrite bool) {
+func (c *Client) waitForGap(ctx context.Context, isWrite bool) error {
 	if isWrite {
 		c.writeMu.Lock()
 		defer c.writeMu.Unlock()
@@ -621,12 +668,12 @@ func (c *Client) waitForGap(ctx context.Context, isWrite bool) {
 				select {
 				case <-time.After(c.writeGap - elapsed):
 				case <-ctx.Done():
-					return
+					return ctx.Err()
 				}
 			}
 		}
 		c.lastWriteAt = time.Now()
-		return
+		return nil
 	}
 	c.gapMu.Lock()
 	defer c.gapMu.Unlock()
@@ -636,30 +683,39 @@ func (c *Client) waitForGap(ctx context.Context, isWrite bool) {
 			select {
 			case <-time.After(c.minGap - elapsed):
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			}
 		}
 	}
 	c.lastReqAt = time.Now()
+	return nil
 }
 
 // cooldownFor returns the configured cooldown duration for the request kind.
 func (c *Client) cooldownFor(isWrite bool) time.Duration {
 	if isWrite {
 		if c.writeCooldown > 0 {
-			return c.writeCooldown
+			return boundedCooldown(true, c.writeCooldown)
 		}
 		return defaultWriteCooldown
 	}
 	if c.readCooldown > 0 {
-		return c.readCooldown
+		return boundedCooldown(false, c.readCooldown)
 	}
 	return defaultReadCooldown
+}
+
+func boundedCooldown(isWrite bool, d time.Duration) time.Duration {
+	if isWrite && d > 30*time.Minute {
+		return 30 * time.Minute
+	}
+	return d
 }
 
 // tripCooldown sets the cooldown deadline for the request kind. Subsequent
 // requests of the same kind will block until the deadline (see waitForCooldownInternal).
 func (c *Client) tripCooldown(isWrite bool, d time.Duration, reason string) {
+	d = boundedCooldown(isWrite, d)
 	if d <= 0 {
 		return
 	}

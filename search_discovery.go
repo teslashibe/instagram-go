@@ -42,12 +42,15 @@ type TypeaheadSearchResult struct {
 // SearchReels returns the first inventory-proven mobile Reels SERP as an
 // iterator of Post values. The captured endpoint exposes a continuation token,
 // but the corresponding request parameter has not been proven, so the iterator
-// deliberately makes at most one upstream request.
+// deliberately makes at most one upstream request and rejects cursors locally.
 func (c *Client) SearchReels(query string) *Iterator[*Post] {
 	query = strings.TrimSpace(query)
-	return newIterator(func(ctx context.Context, _ string) (Page[*Post], error) {
+	return newIterator(func(ctx context.Context, cursor string) (Page[*Post], error) {
 		if query == "" {
 			return Page[*Post]{}, fmt.Errorf("instagram: SearchReels: query required")
+		}
+		if cursor != "" {
+			return Page[*Post]{}, fmt.Errorf("instagram: SearchReels: invalid cursor: continuation is unavailable")
 		}
 		q := mobileSearchQuery(query, "clips_search_page")
 		var resp struct {

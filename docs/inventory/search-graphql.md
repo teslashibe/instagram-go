@@ -47,7 +47,8 @@ retry policy, cooldown circuit breaker, and auth/error sentinels.
   those lightweight entities as suggestion strings.
 - [x] Mobile Reels REST (`fbsearch/reels_serp`) — `SearchReels(query)` maps the
   captured `reels_serp_modules[].clips[].media` nodes through the shared `Post`
-  parser. It remains first-page-only until a continuation request is captured.
+  parser. It remains first-page-only until a continuation request is captured;
+  supplied cursors fail locally before an HTTP request.
 
 ### Deferred
 

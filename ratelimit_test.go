@@ -77,7 +77,7 @@ func newFakeClient(t *testing.T, srv *httptest.Server, opts ...instagram.Option)
 	}
 	all = append(all, opts...)
 	c, err := instagram.New(instagram.Cookies{
-		SessionID: "x", CSRFToken: "y", DSUserID: "z",
+		SessionID: "x", CSRFToken: "y", DSUserID: "123",
 	}, all...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
