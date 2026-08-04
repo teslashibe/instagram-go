@@ -52,8 +52,9 @@ type readSurface struct {
 func (p probe) capture(ctx context.Context) (inventoryReport, error) {
 	p.baseURL = strings.TrimRight(strings.TrimSpace(p.baseURL), "/")
 	u, err := url.Parse(p.baseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" {
-		return inventoryReport{}, errors.New("host must be an absolute HTTP(S) origin")
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" ||
+		(u.Hostname() != "i.instagram.com" && u.Hostname() != "www.instagram.com") {
+		return inventoryReport{}, errors.New("host must be the HTTPS i.instagram.com or www.instagram.com origin")
 	}
 	if p.cookies["sessionid"] == "" || p.cookies["csrftoken"] == "" || p.cookies["ds_user_id"] == "" {
 		return inventoryReport{}, errors.New("sessionid, csrftoken, and ds_user_id are required")

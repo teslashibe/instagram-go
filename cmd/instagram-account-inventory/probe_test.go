@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -76,6 +77,33 @@ func TestProbeFailsClosedOnMismatchChallengeAndMissingShape(t *testing.T) {
 			}
 			if _, err := p.capture(context.Background()); err == nil {
 				t.Fatal("expected fail-closed error")
+			}
+		})
+	}
+}
+
+func TestProbeRejectsUntrustedOriginBeforeSendingCookies(t *testing.T) {
+	for _, baseURL := range []string{
+		"http://i.instagram.com",
+		"https://instagram.com",
+		"https://i.instagram.com.evil.example",
+		"https://evil.example",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			called := false
+			p := probe{
+				baseURL: baseURL,
+				cookies: cookieSet{"sessionid": "s", "csrftoken": "c", "ds_user_id": accountFixtureIDForProbe},
+				httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					called = true
+					return nil, errors.New("transport must not be called")
+				})},
+			}
+			if _, err := p.capture(context.Background()); err == nil {
+				t.Fatal("expected untrusted origin rejection")
+			}
+			if called {
+				t.Fatal("capture sent cookies to an untrusted origin")
 			}
 		})
 	}
