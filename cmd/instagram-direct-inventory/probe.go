@@ -129,6 +129,9 @@ func inspectDirectHAR(ctx context.Context, path, viewerID, approvedRecipient, co
 	if err != nil {
 		return directReport{}, err
 	}
+	if err := validateDirectViewer(inbox.body, viewerID); err != nil {
+		return directReport{}, err
+	}
 	thread, threadContinuation, err := matchDirectThreadPagination(found["Thread retrieval"], inboxThreads)
 	if err != nil {
 		return directReport{}, err
@@ -211,6 +214,22 @@ func matchDirectInboxPagination(entries []capturedDirectEntry) (capturedDirectEn
 	}
 	return capturedDirectEntry{}, capturedDirectEntry{}, nil,
 		errors.New("inbox pagination omitted an initial GET without a cursor")
+}
+
+// validateDirectViewer requires a captured inbox response to identify the
+// declared authenticated viewer. The HAR verifier must not accept a syntactic
+// viewer ID that has no evidence that it belongs to the captured session.
+func validateDirectViewer(body any, viewerID string) error {
+	viewer, ok := nestedObject(body, "viewer")
+	if !ok {
+		return errors.New("inbox response omitted viewer identity")
+	}
+	for _, key := range []string{"pk_id", "pk", "id"} {
+		if id, ok := scalarString(viewer[key]); ok && id == viewerID {
+			return nil
+		}
+	}
+	return errors.New("inbox viewer identity did not match the declared viewer ID")
 }
 
 func matchDirectThreadPagination(entries []capturedDirectEntry, inboxThreadIDs []string) (capturedDirectEntry, capturedDirectEntry, error) {
@@ -417,6 +436,9 @@ func scalarString(value any) (string, bool) {
 func inspectDirectEntry(entry harEntry) (capturedDirectEntry, string, bool, error) {
 	u, err := url.Parse(entry.Request.URL)
 	if err != nil {
+		return capturedDirectEntry{}, "", false, nil
+	}
+	if u.Scheme != "https" || (u.Hostname() != "i.instagram.com" && u.Hostname() != "www.instagram.com") {
 		return capturedDirectEntry{}, "", false, nil
 	}
 	name, pathID := directSurfaceName(entry.Request.Method, u.Path)

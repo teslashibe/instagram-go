@@ -33,7 +33,7 @@ func completeDirectHAR(t *testing.T, threadID, recipientID string) string {
 			"response": map[string]any{"status": 200, "content": map[string]any{"text": responseText}},
 		}
 	}
-	inbox := `{"inbox":{"threads":[{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `","username":"private-user"}],"items":[{"item_id":"private-item","item_type":"text","text":"private inbox text"}]}],"oldest_cursor":"private-inbox-cursor","has_older":true},"last_seen_at":{"` + recipientID + `":"private-timestamp"},"status":"ok"}`
+	inbox := `{"viewer":{"pk":"` + testViewerID + `"},"inbox":{"threads":[{"thread_id":"` + threadID + `","users":[{"pk":"` + recipientID + `","username":"private-user"}],"items":[{"item_id":"private-item","item_type":"text","text":"private inbox text"}]}],"oldest_cursor":"private-inbox-cursor","has_older":true},"last_seen_at":{"` + recipientID + `":"private-timestamp"},"status":"ok"}`
 	inboxContinuation := `{"inbox":{"threads":[],"has_older":false},"status":"ok"}`
 	thread := `{"thread":{"thread_id":"` + threadID + `","items":[{"item_id":"` + testItemID + `","user_id":"` + recipientID + `","item_type":"text","text":"private thread text"}],"oldest_cursor":"private-thread-cursor","has_older":true},"status":"ok"}`
 	threadContinuation := `{"thread":{"thread_id":"` + threadID + `","items":[],"has_older":false},"status":"ok"}`
@@ -129,6 +129,33 @@ func TestInspectDirectHARRejectsUnownedThread(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "authenticated viewer's inbox") {
 		t.Fatalf("error=%v", err)
 	}
+}
+
+func TestInspectDirectHARRejectsUntrustedOriginAndViewerMismatch(t *testing.T) {
+	t.Run("untrusted origin", func(t *testing.T) {
+		content := strings.Replace(
+			completeDirectHAR(t, testThreadID, testRecipientID),
+			"https://i.instagram.com/",
+			"https://i.instagram.com.evil.example/",
+			-1,
+		)
+		_, err := inspectDirectHAR(context.Background(), writeHAR(t, content), testViewerID, testRecipientID, testRecipientID, time.Now)
+		if err == nil || !strings.Contains(err.Error(), "missing successful") {
+			t.Fatalf("error=%v", err)
+		}
+	})
+	t.Run("viewer mismatch", func(t *testing.T) {
+		content := strings.Replace(
+			completeDirectHAR(t, testThreadID, testRecipientID),
+			testViewerID,
+			"999",
+			1,
+		)
+		_, err := inspectDirectHAR(context.Background(), writeHAR(t, content), testViewerID, testRecipientID, testRecipientID, time.Now)
+		if err == nil || !strings.Contains(err.Error(), "viewer identity did not match") {
+			t.Fatalf("error=%v", err)
+		}
+	})
 }
 
 func TestInspectDirectHARRequiresCursorMatchedContinuationRequests(t *testing.T) {
