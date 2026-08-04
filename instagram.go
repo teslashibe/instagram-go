@@ -126,6 +126,12 @@ type Client struct {
 	// fixtures. No exported option can bypass the live-capture gate.
 	allowUnverifiedPublishing bool
 
+	// wwwClaim is the latest X-IG-WWW-Claim value learned from
+	// x-ig-set-www-claim response headers. Browser Direct/account writes
+	// require a non-zero hmac claim after the first successful www response.
+	wwwClaimMu sync.Mutex
+	wwwClaim   string
+
 	gapMu       sync.Mutex
 	lastReqAt   time.Time
 	writeMu     sync.Mutex
@@ -301,6 +307,21 @@ func WithMinRequestGap(d time.Duration) Option {
 // rate-limit budget from reads on Instagram's backend.
 func WithMinWriteGap(d time.Duration) Option {
 	return func(c *Client) { c.writeGap = d }
+}
+
+// WithWWWClaim sets the initial X-IG-WWW-Claim value for www.instagram.com
+// requests. The client also learns updated values from x-ig-set-www-claim
+// response headers. Pass an empty string to keep the default ("0") until the
+// first successful claim header arrives.
+func WithWWWClaim(claim string) Option {
+	return func(c *Client) {
+		if strings.TrimSpace(claim) == "" {
+			return
+		}
+		c.wwwClaimMu.Lock()
+		c.wwwClaim = strings.TrimSpace(claim)
+		c.wwwClaimMu.Unlock()
+	}
 }
 
 // WithRateLimitCooldown sets how long the client refuses requests after

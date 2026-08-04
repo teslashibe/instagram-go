@@ -10,7 +10,10 @@ import (
 	"strings"
 )
 
-const currentAccountPath = "/api/v1/accounts/current_user/"
+const (
+	currentAccountPath = "/api/v1/accounts/current_user/"
+	webFormDataPath    = "/api/v1/accounts/edit/web_form_data/"
+)
 
 type accountEnvelope struct {
 	User json.RawMessage `json:"user"`
@@ -72,6 +75,20 @@ func (c *Client) GetProfessionalAccountState(ctx context.Context) (*Professional
 }
 
 func (c *Client) readAccountContract(ctx context.Context) (accountContract, error) {
+	// Prefer the captured mobile current_user contract when it works (tests +
+	// app-minted sessions). Browser-minted sessions fail that path and instead
+	// succeed on www web_form_data + users/{id}/info/.
+	state, err := c.readAccountContractFromCurrentUser(ctx)
+	if err == nil {
+		return state, nil
+	}
+	if !accountNeedsWebFormFallback(err) {
+		return accountContract{}, err
+	}
+	return c.readAccountContractFromWebForm(ctx)
+}
+
+func (c *Client) readAccountContractFromCurrentUser(ctx context.Context) (accountContract, error) {
 	q := url.Values{"edit": {"true"}}
 	var envelope accountEnvelope
 	if err := c.doJSON(ctx, http.MethodGet, currentAccountPath, q, &requestOptions{Host: requestHostAPI}, &envelope); err != nil {
@@ -84,6 +101,60 @@ func (c *Client) readAccountContract(ctx context.Context) (accountContract, erro
 	if err := json.Unmarshal(envelope.User, &fields); err != nil {
 		return accountContract{}, fmt.Errorf("%w: parse current account: %v", ErrUnexpectedResponse, err)
 	}
+	return parseAccountContractFields(c, fields, true)
+}
+
+func (c *Client) readAccountContractFromWebForm(ctx context.Context) (accountContract, error) {
+	var envelope struct {
+		FormData json.RawMessage `json:"form_data"`
+		Status   string          `json:"status"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, webFormDataPath, nil, &requestOptions{
+		Referer: "https://www.instagram.com/accounts/edit/",
+	}, &envelope); err != nil {
+		return accountContract{}, err
+	}
+	if len(envelope.FormData) == 0 || string(envelope.FormData) == "null" {
+		return accountContract{}, fmt.Errorf("%w: web form data response missing form_data", ErrUnexpectedResponse)
+	}
+	var form map[string]json.RawMessage
+	if err := json.Unmarshal(envelope.FormData, &form); err != nil {
+		return accountContract{}, fmt.Errorf("%w: parse web form data: %v", ErrUnexpectedResponse, err)
+	}
+	// web_form_data uses first_name instead of full_name and omits account id /
+	// privacy. Normalize before the shared field parser.
+	if _, ok := form["full_name"]; !ok {
+		if first := form["first_name"]; len(first) > 0 {
+			form["full_name"] = first
+		}
+	}
+	for _, key := range []string{"biography", "external_url", "full_name", "username"} {
+		if raw, ok := form[key]; !ok || len(raw) == 0 || string(raw) == "null" {
+			form[key] = json.RawMessage(`""`)
+		}
+	}
+	if _, ok := form["pk_id"]; !ok && c.cookies.DSUserID != "" {
+		raw, _ := json.Marshal(c.cookies.DSUserID)
+		form["pk_id"] = raw
+	}
+	me, err := c.GetProfileByID(ctx, c.cookies.DSUserID)
+	if err != nil {
+		return accountContract{}, fmt.Errorf("web form privacy projection: %w", err)
+	}
+	priv, _ := json.Marshal(me.IsPrivate)
+	form["is_private"] = priv
+	if raw, ok := form["business_account"]; ok && string(raw) != "null" {
+		var business bool
+		if json.Unmarshal(raw, &business) == nil {
+			b, _ := json.Marshal(business)
+			form["is_business"] = b
+			form["is_professional_account"] = b
+		}
+	}
+	return parseAccountContractFields(c, form, false)
+}
+
+func parseAccountContractFields(c *Client, fields map[string]json.RawMessage, requireProfessionalKeys bool) (accountContract, error) {
 	id := stringifyID(fields["pk_id"], fields["pk"], fields["id"])
 	if id == "" {
 		return accountContract{}, fmt.Errorf("%w: current account response missing id", ErrUnexpectedResponse)
@@ -135,6 +206,7 @@ func (c *Client) readAccountContract(ctx context.Context) (accountContract, erro
 	if err != nil {
 		return accountContract{}, err
 	}
+	_ = requireProfessionalKeys
 	return accountContract{
 		ID: id, Username: username, FullName: fullName, Biography: biography,
 		ExternalURL: externalURL, IsPrivate: isPrivate,
@@ -142,6 +214,17 @@ func (c *Client) readAccountContract(ctx context.Context) (accountContract, erro
 		AccountType: accountType, CategoryID: categoryID,
 		CategoryName: categoryName, DisplayCategory: displayCategory,
 	}, nil
+}
+
+func accountNeedsWebFormFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "something went wrong") ||
+		strings.Contains(msg, "useragent mismatch") ||
+		strings.Contains(msg, "login_required") ||
+		strings.Contains(msg, "login required")
 }
 
 func requiredAccountRaw(fields map[string]json.RawMessage, name string) (json.RawMessage, error) {
@@ -294,6 +377,9 @@ func (c *Client) UpdateProfileFields(ctx context.Context, p UpdateProfileFieldsP
 		"first_name":   {p.After.FullName},
 		"biography":    {p.After.Biography},
 		"external_url": {p.After.ExternalURL},
+		"_uuid":        {c.deviceUUID()},
+		"_uid":         {c.cookies.DSUserID},
+		"_csrftoken":   {c.cookies.CSRFToken},
 	}
 	if err := c.accountWrite(ctx, "/api/v1/accounts/edit_profile/", form); err != nil {
 		return nil, err
@@ -378,6 +464,9 @@ func (c *Client) UpdateProfessionalSettings(ctx context.Context, p UpdateProfess
 	form := url.Values{
 		"category_id":          {p.After.CategoryID},
 		"should_show_category": {strconv.FormatBool(p.After.DisplayCategory)},
+		"_uuid":                {c.deviceUUID()},
+		"_uid":                 {c.cookies.DSUserID},
+		"_csrftoken":           {c.cookies.CSRFToken},
 	}
 	if err := c.accountWrite(ctx, "/api/v1/business/account/edit/", form); err != nil {
 		return nil, err
@@ -396,8 +485,29 @@ func (c *Client) UpdateProfessionalSettings(ctx context.Context, p UpdateProfess
 }
 
 func (c *Client) accountWrite(ctx context.Context, path string, form url.Values) error {
-	return c.doJSON(ctx, http.MethodPost, path, nil, &requestOptions{
+	if form == nil {
+		form = url.Values{}
+	}
+	if form.Get("_uuid") == "" {
+		form.Set("_uuid", c.deviceUUID())
+	}
+	if form.Get("_uid") == "" && c.cookies.DSUserID != "" {
+		form.Set("_uid", c.cookies.DSUserID)
+	}
+	if form.Get("_csrftoken") == "" && c.cookies.CSRFToken != "" {
+		form.Set("_csrftoken", c.cookies.CSRFToken)
+	}
+	// Prefer mobile private-API writes when available; browser sessions need the
+	// www write profile (including X-Instagram-AJAX) for the same paths.
+	err := c.doJSON(ctx, http.MethodPost, path, nil, &requestOptions{
 		Host: requestHostAPI, IsWrite: true, NoRetry: true, FormBody: form,
+	}, nil)
+	if err == nil || !accountNeedsWebFormFallback(err) {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodPost, path, nil, &requestOptions{
+		IsWrite: true, NoRetry: true, FormBody: form,
+		Referer: "https://www.instagram.com/accounts/edit/",
 	}, nil)
 }
 

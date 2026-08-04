@@ -51,7 +51,11 @@ func newClient(t *testing.T) *instagram.Client {
 		return sharedClient
 	}
 	cookies := envOrSkip(t)
-	c, err := instagram.New(cookies)
+	opts := []instagram.Option{}
+	if claim := strings.TrimSpace(os.Getenv("IG_WWW_CLAIM")); claim != "" {
+		opts = append(opts, instagram.WithWWWClaim(claim))
+	}
+	c, err := instagram.New(cookies, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

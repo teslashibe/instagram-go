@@ -222,7 +222,7 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 	} else {
 		req.Header.Set("X-Requested-With", "XMLHttpRequest")
 		req.Header.Set("X-ASBD-ID", "129477")
-		req.Header.Set("X-IG-WWW-Claim", "0")
+		req.Header.Set("X-IG-WWW-Claim", c.currentWWWClaim())
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
 		req.Header.Set("Sec-Fetch-Dest", "empty")
@@ -234,7 +234,10 @@ func (c *Client) buildRequest(ctx context.Context, method, fullURL string, opts 
 		req.Header.Set("Origin", requestBaseURL)
 	}
 	req.Header.Set("X-CSRFToken", c.cookies.CSRFToken)
-	if opts.IsWrite {
+	// X-Instagram-AJAX is a www/ajax write marker. Mobile private-API captures
+	// (Direct, account admin, rupload) do not send it; adding it on i.instagram.com
+	// can trip login_required / login_race_condition on otherwise valid sessions.
+	if opts.IsWrite && !useAPIProfile {
 		req.Header.Set("X-Instagram-AJAX", "1")
 	}
 
@@ -281,12 +284,38 @@ func (c *Client) buildCookieHeader() string {
 	return strings.Join(pairs, "; ")
 }
 
+func (c *Client) currentWWWClaim() string {
+	c.wwwClaimMu.Lock()
+	defer c.wwwClaimMu.Unlock()
+	if c.wwwClaim == "" {
+		return "0"
+	}
+	return c.wwwClaim
+}
+
+func (c *Client) learnWWWClaim(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	claim := strings.TrimSpace(resp.Header.Get("x-ig-set-www-claim"))
+	if claim == "" {
+		claim = strings.TrimSpace(resp.Header.Get("X-IG-Set-WWW-Claim"))
+	}
+	if claim == "" {
+		return
+	}
+	c.wwwClaimMu.Lock()
+	c.wwwClaim = claim
+	c.wwwClaimMu.Unlock()
+}
+
 // classifyResponse reads the body and maps non-2xx responses to typed errors.
 func (c *Client) classifyResponse(resp *http.Response, isWrite bool, method, fullURL string) ([]byte, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 	if err != nil {
 		return nil, fmt.Errorf("instagram: read body: %w", err)
 	}
+	c.learnWWWClaim(resp)
 
 	// Detect Instagram's "wipe sessionid" trick — a 302 with Set-Cookie wiping
 	// sessionid means the request was rate-blocked or session-rejected.
@@ -563,9 +592,15 @@ func isRateLimitMessage(message string) bool {
 
 // statusFail is the standard Instagram failure envelope.
 type statusFail struct {
-	Status   string `json:"status"`
-	Message  string `json:"message"`
-	ErrorMsg string `json:"error_message"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	ErrorMsg  string `json:"error_message"`
+	ErrorCode any    `json:"error_code"`
+	Content   *struct {
+		Status    string `json:"status"`
+		ErrorCode any    `json:"error_code"`
+		Message   string `json:"message"`
+	} `json:"content"`
 }
 
 func decodeStatusFail(body []byte) *statusFail {
@@ -581,6 +616,24 @@ func decodeStatusFail(body []byte) *statusFail {
 	}
 	if sf.Message == "" {
 		sf.Message = sf.ErrorMsg
+	}
+	// Nested product failures (e.g. Direct inbox 4415001) put the human-readable
+	// status under content.status / content.error_code with an empty top-level message.
+	if sf.Message == "" && sf.Content != nil {
+		switch {
+		case sf.Content.Message != "":
+			sf.Message = sf.Content.Message
+		case sf.Content.Status != "":
+			sf.Message = sf.Content.Status
+		}
+		if sf.ErrorCode == nil && sf.Content.ErrorCode != nil {
+			sf.ErrorCode = sf.Content.ErrorCode
+		}
+	}
+	if sf.Message != "" && sf.ErrorCode != nil {
+		sf.Message = fmt.Sprintf("%s (error_code=%v)", sf.Message, sf.ErrorCode)
+	} else if sf.Message == "" && sf.ErrorCode != nil {
+		sf.Message = fmt.Sprintf("error_code=%v", sf.ErrorCode)
 	}
 	return &sf
 }

@@ -83,8 +83,14 @@ func (c *Client) GetDirectInbox() *Iterator[*DirectThread] {
 		q.Set("thread_message_limit", "1")
 		q.Set("visual_message_return_type", "unseen")
 		q.Set("persistentBadging", "true")
+		q.Set("is_prefetching", "false")
+		q.Set("include_old_mrs", "false")
+		q.Set("no_pending_badge", "true")
+		q.Set("fetch_reason", "initial_snapshot")
 		if upstreamCursor != "" {
 			q.Set("cursor", upstreamCursor)
+			q.Set("direction", "older")
+			q.Set("fetch_reason", "page_scroll")
 		}
 		var resp struct {
 			Inbox struct {
@@ -94,7 +100,12 @@ func (c *Client) GetDirectInbox() *Iterator[*DirectThread] {
 			} `json:"inbox"`
 			Status string `json:"status"`
 		}
-		if err := c.doJSON(ctx, http.MethodGet, "/api/v1/direct_v2/inbox/", q, &requestOptions{Host: requestHostAPI}, &resp); err != nil {
+		// Browser-minted sessions succeed on www.instagram.com with the web header
+		// profile. The mobile i.instagram.com host returns product errors
+		// (e.g. 4415001 "Prompt has contribution") for the same cookies.
+		if err := c.doJSON(ctx, http.MethodGet, "/api/v1/direct_v2/inbox/", q, &requestOptions{
+			Referer: "https://www.instagram.com/direct/inbox/",
+		}, &resp); err != nil {
 			return Page[*DirectThread]{}, err
 		}
 		threads := make([]*DirectThread, 0, len(resp.Inbox.Threads))
@@ -146,7 +157,9 @@ func (c *Client) GetDirectThread(threadID string) *Iterator[*DirectItem] {
 			Status string `json:"status"`
 		}
 		path := "/api/v1/direct_v2/threads/" + threadID + "/"
-		if err := c.doJSON(ctx, http.MethodGet, path, q, &requestOptions{Host: requestHostAPI}, &resp); err != nil {
+		if err := c.doJSON(ctx, http.MethodGet, path, q, &requestOptions{
+			Referer: "https://www.instagram.com/direct/inbox/",
+		}, &resp); err != nil {
 			return Page[*DirectItem]{}, err
 		}
 		items := make([]*DirectItem, 0, len(resp.Thread.Items))
@@ -292,9 +305,17 @@ func directTextDigest(text string) string {
 
 func (c *Client) createDirectThread(ctx context.Context, recipientID string) (string, error) {
 	recipients, _ := json.Marshal([]string{recipientID})
-	form := url.Values{"recipient_users": {string(recipients)}}
-	if c.cookies.IgDid != "" {
-		form.Set("_uuid", c.cookies.IgDid)
+	clientContext, err := newDirectClientContext()
+	if err != nil {
+		return "", fmt.Errorf("instagram: createDirectThread: client context: %w", err)
+	}
+	form := url.Values{
+		"recipient_users":       {string(recipients)},
+		"_uuid":                 {c.deviceUUID()},
+		"_uid":                  {c.cookies.DSUserID},
+		"_csrftoken":            {c.cookies.CSRFToken},
+		"client_context":        {clientContext},
+		"is_partnership_folder": {"false"},
 	}
 	var resp struct {
 		Thread struct {
@@ -304,7 +325,8 @@ func (c *Client) createDirectThread(ctx context.Context, recipientID string) (st
 		Status   string          `json:"status"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/direct_v2/create_group_thread/", nil, &requestOptions{
-		Host: requestHostAPI, IsWrite: true, FormBody: form, MaxAttempts: 1,
+		IsWrite: true, FormBody: form, MaxAttempts: 1,
+		Referer: "https://www.instagram.com/direct/inbox/",
 	}, &resp); err != nil {
 		return "", err
 	}
@@ -327,9 +349,10 @@ func (c *Client) broadcastDirectText(ctx context.Context, threadID, text, client
 		"offline_threading_id": {directOfflineThreadingID(clientContext)},
 		"text":                 {text},
 		"thread_ids":           {string(threadIDs)},
-	}
-	if c.cookies.IgDid != "" {
-		form.Set("_uuid", c.cookies.IgDid)
+		"_uuid":                {c.deviceUUID()},
+		"_uid":                 {c.cookies.DSUserID},
+		"_csrftoken":           {c.cookies.CSRFToken},
+		"device_id":            {c.androidDeviceID()},
 	}
 	var resp struct {
 		Payload struct {
@@ -339,7 +362,8 @@ func (c *Client) broadcastDirectText(ctx context.Context, threadID, text, client
 		Status string          `json:"status"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/direct_v2/threads/broadcast/text/", nil, &requestOptions{
-		Host: requestHostAPI, IsWrite: true, FormBody: form,
+		IsWrite: true, FormBody: form,
+		Referer: "https://www.instagram.com/direct/inbox/",
 	}, &resp); err != nil {
 		return "", "", err
 	}
@@ -471,6 +495,10 @@ func validateDirectID(name, id string) error {
 }
 
 func newDirectClientContext() (string, error) {
+	return newRandomUUID()
+}
+
+func newRandomUUID() (string, error) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return "", err
@@ -479,6 +507,25 @@ func newDirectClientContext() (string, error) {
 	id[8] = (id[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(id[:])
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:], nil
+}
+
+// deviceUUID returns the stable device identity Instagram expects as `_uuid`.
+// Prefer browser `ig_did`; otherwise derive a deterministic UUID from the session.
+func (c *Client) deviceUUID() string {
+	if id := strings.TrimSpace(c.cookies.IgDid); id != "" {
+		return id
+	}
+	sum := sha256.Sum256([]byte("instagram-go-device\x00" + c.cookies.SessionID + "\x00" + c.cookies.DSUserID))
+	sum[6] = (sum[6] & 0x0f) | 0x40
+	sum[8] = (sum[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(sum[:16])
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
+}
+
+// androidDeviceID returns the Android-style device_id used on Direct broadcasts.
+func (c *Client) androidDeviceID() string {
+	sum := sha256.Sum256([]byte("instagram-go-android-device\x00" + c.deviceUUID()))
+	return "android-" + hex.EncodeToString(sum[:8])
 }
 
 func directOfflineThreadingID(clientContext string) string {

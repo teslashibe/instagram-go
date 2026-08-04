@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -351,8 +352,9 @@ func TestScopedPrivacyAndProfessionalWritesVerifyAllowlistedState(t *testing.T) 
 					t.Fatalf("write = %s %s", req.Method, req.URL.Path)
 				}
 				body, _ := io.ReadAll(req.Body)
-				if len(body) != 0 {
-					t.Fatalf("privacy write body = %q", body)
+				form, _ := url.ParseQuery(string(body))
+				if form.Get("_uuid") == "" || form.Get("_uid") == "" || form.Get("_csrftoken") == "" {
+					t.Fatalf("privacy write body missing device/auth fields: %q", body)
 				}
 				return accountResponse(req, http.StatusOK, `{"status":"ok"}`), nil
 			default:
@@ -381,9 +383,12 @@ func TestScopedPrivacyAndProfessionalWritesVerifyAllowlistedState(t *testing.T) 
 					t.Fatalf("write = %s %s", req.Method, req.URL.Path)
 				}
 				body, _ := io.ReadAll(req.Body)
-				form := string(body)
-				if form != "category_id=1001&should_show_category=false" {
-					t.Fatalf("professional form = %q", form)
+				form, _ := url.ParseQuery(string(body))
+				if form.Get("category_id") != "1001" || form.Get("should_show_category") != "false" {
+					t.Fatalf("professional form = %q", body)
+				}
+				if form.Get("_uuid") == "" || form.Get("_uid") == "" || form.Get("_csrftoken") == "" {
+					t.Fatalf("professional form missing device/auth fields: %q", body)
 				}
 				return accountResponse(req, http.StatusOK, `{"status":"ok"}`), nil
 			default:

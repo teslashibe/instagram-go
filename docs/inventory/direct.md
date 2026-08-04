@@ -31,17 +31,18 @@ idempotency fields.
 
 ## Captured endpoints
 
-All four endpoints use `https://i.instagram.com`, the mobile Android user agent,
-mobile app ID, `X-IG-Capabilities`, `X-IG-Connection-Type`, authenticated cookie
-header, and CSRF header. The SDK reuses its existing mobile request profile and
-does not synthesize an authorization bearer token or WWW claim.
+Browser-minted sessions use `https://www.instagram.com` with the web header
+profile (`X-IG-App-ID` web app ID, `X-Requested-With`, `X-IG-WWW-Claim`, Origin /
+Referer). The mobile `i.instagram.com` profile rejects the same cookies for
+Direct (`4415001` / `login_required`). The SDK does not synthesize an
+authorization bearer token.
 
-| Surface | Method and path | Captured request fields | Captured continuation |
+| Surface | Method and path | Captured / SDK request fields | Captured continuation |
 |---|---|---|---|
-| Inbox | `GET /api/v1/direct_v2/inbox/` | `limit`, `thread_message_limit`, `visual_message_return_type`, `persistentBadging`; continuation adds `cursor` | `inbox.has_older`, `inbox.oldest_cursor` |
+| Inbox | `GET /api/v1/direct_v2/inbox/` | `limit`, `thread_message_limit`, `visual_message_return_type`, `persistentBadging`, `is_prefetching=false`, `include_old_mrs=false`, `no_pending_badge=true`, `fetch_reason=initial_snapshot`; continuation adds `cursor`, `direction=older`, `fetch_reason=page_scroll` | `inbox.has_older`, `inbox.oldest_cursor` |
 | Thread | `GET /api/v1/direct_v2/threads/{thread_id}/` | `limit`, `visual_message_return_type`; continuation adds `cursor` | `thread.has_older`, `thread.oldest_cursor` |
-| Create | `POST /api/v1/direct_v2/create_group_thread/` | `_uuid` when captured, `recipient_users` containing exactly one ID | returns `thread.thread_id` |
-| Broadcast text | `POST /api/v1/direct_v2/threads/broadcast/text/` | `_uuid` when captured, `action=send_item`, `thread_ids`, non-empty `text`, `client_context`, matching `mutation_token`, stable `offline_threading_id` | returns `payload.item_id` |
+| Create | `POST /api/v1/direct_v2/create_group_thread/` | always `_uuid`, `_uid`, `_csrftoken`, `client_context`, `is_partnership_folder=false`, `recipient_users` containing exactly one ID; mobile write profile (no `X-Instagram-AJAX`) | returns `thread.thread_id` |
+| Broadcast text | `POST /api/v1/direct_v2/threads/broadcast/text/` | always `_uuid`, `_uid`, `_csrftoken`, `device_id`, `action=send_item`, `thread_ids`, non-empty `text`, `client_context`, matching `mutation_token`, stable `offline_threading_id`; mobile write profile (no `X-Instagram-AJAX`) | returns `payload.item_id` |
 
 SDK cursors are URL-safe base64 JSON envelopes with a version, surface, and
 upstream cursor. Thread cursors also contain the thread ID. Unsupported versions,

@@ -58,8 +58,11 @@ func TestGetDirectInboxParsesTypedThreadsAndResumesOpaqueCursor(t *testing.T) {
 		if req.Method != http.MethodGet || req.URL.Path != "/api/v1/direct_v2/inbox/" {
 			t.Fatalf("request = %s %s", req.Method, req.URL)
 		}
-		if req.Header.Get("X-IG-App-ID") != defaultAPIAppID {
-			t.Fatalf("mobile app header = %q", req.Header.Get("X-IG-App-ID"))
+		if req.Header.Get("X-IG-App-ID") != defaultAppID {
+			t.Fatalf("web app header = %q", req.Header.Get("X-IG-App-ID"))
+		}
+		if req.Header.Get("X-Requested-With") != "XMLHttpRequest" {
+			t.Fatalf("web X-Requested-With = %q", req.Header.Get("X-Requested-With"))
 		}
 		if requests == 1 {
 			if req.URL.Query().Get("cursor") != "" {
