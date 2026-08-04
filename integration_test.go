@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -402,6 +403,109 @@ func TestIntegration_Search(t *testing.T) {
 	}
 }
 
+func TestIntegration_SearchPosts(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	first := c.SearchPosts("coffee").WithMaxPages(1)
+	firstPage, err := first.Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchPosts first page: %v", err)
+	}
+	if len(firstPage) == 0 {
+		t.Fatal("SearchPosts returned no posts for coffee")
+	}
+	firstIDs := make(map[string]struct{}, len(firstPage))
+	for _, post := range firstPage {
+		if post.PK == "" && post.Code == "" {
+			t.Fatalf("post has no usable media identifier: %#v", post)
+		}
+		if post.Code == "" || post.PermalinkURL == "" {
+			t.Fatalf("post has no shortcode/permalink: %#v", post)
+		}
+		key := post.PK
+		if key == "" {
+			key = post.Code
+		}
+		firstIDs[key] = struct{}{}
+	}
+
+	cursor := first.Cursor()
+	if cursor == "" {
+		t.Logf("PASS: SearchPosts returned %d posts and cleanly reported no second page", len(firstPage))
+		return
+	}
+	secondPage, err := c.SearchPosts("coffee").WithCursor(cursor).WithMaxPages(1).Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchPosts second page: %v", err)
+	}
+	newPosts := 0
+	for _, post := range secondPage {
+		key := post.PK
+		if key == "" {
+			key = post.Code
+		}
+		if _, duplicate := firstIDs[key]; !duplicate {
+			newPosts++
+		}
+	}
+	if len(secondPage) > 0 && newPosts == 0 {
+		t.Fatal("SearchPosts second page duplicated the entire first-page result set")
+	}
+	t.Logf("PASS: SearchPosts returned first=%d second=%d new=%d", len(firstPage), len(secondPage), newPosts)
+}
+
+func TestIntegration_SearchKeywordPosts(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	first := c.SearchKeywordPosts("coffee").WithMaxPages(1)
+	firstPage, err := first.Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchKeywordPosts first page: %v", err)
+	}
+	if len(firstPage) == 0 {
+		t.Fatal("SearchKeywordPosts returned no posts for coffee")
+	}
+	firstIDs := make(map[string]struct{}, len(firstPage))
+	for _, post := range firstPage {
+		if post.PK == "" && post.Code == "" {
+			t.Fatalf("post has no usable media identifier: %#v", post)
+		}
+		key := post.PK
+		if key == "" {
+			key = post.Code
+		}
+		firstIDs[key] = struct{}{}
+	}
+
+	cursor := first.Cursor()
+	if cursor == "" {
+		t.Logf("PASS: SearchKeywordPosts returned %d posts and cleanly reported no second page", len(firstPage))
+		return
+	}
+	secondPage, err := c.SearchKeywordPosts("coffee").WithCursor(cursor).WithMaxPages(1).Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchKeywordPosts fresh-iterator continuation: %v", err)
+	}
+	newPosts := 0
+	for _, post := range secondPage {
+		key := post.PK
+		if key == "" {
+			key = post.Code
+		}
+		if _, duplicate := firstIDs[key]; !duplicate {
+			newPosts++
+		}
+	}
+	if len(secondPage) > 0 && newPosts == 0 {
+		t.Fatal("SearchKeywordPosts second page duplicated the entire first-page result set")
+	}
+	t.Logf("PASS: SearchKeywordPosts returned first=%d second=%d new=%d", len(firstPage), len(secondPage), newPosts)
+}
+
 func TestIntegration_SearchUsers(t *testing.T) {
 	c := newClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -415,6 +519,105 @@ func TestIntegration_SearchUsers(t *testing.T) {
 		t.Fatal("expected at least 1 user")
 	}
 	t.Logf("PASS: SearchUsers returned %d users (top: @%s)", len(users), users[0].Username)
+}
+
+func TestIntegration_SearchReels(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	posts, err := c.SearchReels("coffee").Collect(ctx)
+	if err != nil {
+		t.Fatalf("SearchReels: %v", err)
+	}
+	if len(posts) == 0 {
+		t.Fatal("expected at least one Reel for coffee")
+	}
+	if posts[0].PK == "" {
+		t.Fatalf("first Reel has no media PK: %#v", posts[0])
+	}
+	t.Logf("PASS: SearchReels returned %d reels (first pk=%s code=%s)", len(posts), posts[0].PK, posts[0].Code)
+	logRate(t, c)
+}
+
+func TestIntegration_KeywordTypeahead(t *testing.T) {
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	suggestions, err := c.KeywordTypeahead(ctx, "cof")
+	if err != nil {
+		t.Fatalf("KeywordTypeahead: %v", err)
+	}
+	if len(suggestions) == 0 {
+		t.Log("PASS: Instagram returned no typeahead suggestions (valid empty response)")
+	} else {
+		t.Logf("PASS: KeywordTypeahead returned %d suggestions (first=%q)", len(suggestions), suggestions[0])
+	}
+	logRate(t, c)
+}
+
+func TestIntegration_DirectReadSelfOwnedThread(t *testing.T) {
+	if os.Getenv("IG_DIRECT_LIVE_TEST") != "1" {
+		t.Skip("set IG_DIRECT_LIVE_TEST=1 to read one thread selected from the authenticated burner inbox")
+	}
+	c := newClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	inbox := c.GetDirectInbox().WithMaxPages(1)
+	if !inbox.Next(ctx) {
+		t.Fatalf("authenticated inbox has no thread to verify: %v", inbox.Err())
+	}
+	selected := inbox.Item()
+	if selected == nil || selected.ID == "" {
+		t.Fatal("authenticated inbox returned a thread without an ID")
+	}
+	items := c.GetDirectThread(selected.ID).WithMaxPages(1)
+	count := 0
+	for items.Next(ctx) {
+		count++
+	}
+	if err := items.Err(); err != nil {
+		t.Fatalf("read selected self-owned thread: %v", err)
+	}
+	t.Logf("PASS: read %d items from one thread selected only from the authenticated inbox", count)
+	logRate(t, c)
+}
+
+func TestIntegration_DirectSendApprovedBurnerOrSelf(t *testing.T) {
+	if os.Getenv("IG_DIRECT_WRITE_TEST") != "1" {
+		t.Skip("set IG_DIRECT_WRITE_TEST=1 only after approving a burner/self recipient")
+	}
+	approved := strings.TrimSpace(os.Getenv("IG_DIRECT_APPROVED_RECIPIENT_ID"))
+	confirmed := strings.TrimSpace(os.Getenv("IG_DIRECT_CONFIRM_RECIPIENT_ID"))
+	message := strings.TrimSpace(os.Getenv("IG_DIRECT_TEST_MESSAGE"))
+	if approved == "" || approved != confirmed {
+		t.Fatal("IG_DIRECT_APPROVED_RECIPIENT_ID and IG_DIRECT_CONFIRM_RECIPIENT_ID must be non-empty and identical")
+	}
+	if message == "" {
+		t.Fatal("IG_DIRECT_TEST_MESSAGE must contain the explicitly approved plain-text test message")
+	}
+	c := newClient(t)
+	me, err := c.Me(context.Background())
+	if err != nil {
+		t.Fatalf("Me: %v", err)
+	}
+	if approved != me.ID {
+		if os.Getenv("IG_DIRECT_TARGET_KIND") != "burner" || os.Getenv("IG_DIRECT_BURNER_TARGET_CONFIRM") != "I_CONFIRM_THIS_IS_A_BURNER" {
+			t.Fatal("non-self writes require IG_DIRECT_TARGET_KIND=burner and IG_DIRECT_BURNER_TARGET_CONFIRM=I_CONFIRM_THIS_IS_A_BURNER")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	result, err := c.SendDirectText(ctx, instagram.DirectTextRequest{RecipientID: approved, Text: message})
+	if err != nil {
+		t.Fatalf("SendDirectText: %v", err)
+	}
+	if result.ThreadID == "" || result.ClientContext == "" {
+		t.Fatal("send result omitted thread or client context")
+	}
+	t.Log("PASS: sent one confirmed text item to the explicitly approved burner/self target")
+	logRate(t, c)
 }
 
 func TestIntegration_StoryTray(t *testing.T) {

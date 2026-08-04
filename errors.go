@@ -29,6 +29,38 @@ var (
 	// complete a security challenge (checkpoint) before continuing.
 	ErrChallengeRequired = errors.New("instagram: checkpoint / challenge required")
 
+	// ErrFeedbackRequired is returned when Instagram rejects publishing with
+	// feedback_required. It is also classified as ErrWriteSoftBlock so existing
+	// callers that only understand the broader write classification keep working.
+	ErrFeedbackRequired = errors.New("instagram: feedback required")
+
+	// ErrProcessingFailed is returned when Instagram accepts an upload but its
+	// asynchronous media processor reaches a terminal failure state.
+	ErrProcessingFailed = errors.New("instagram: media processing failed")
+
+	// ErrProcessingTimeout is returned when an uploaded media item does not
+	// reach a captured terminal processing state before the processing deadline.
+	ErrProcessingTimeout = errors.New("instagram: media processing timed out")
+
+	// ErrPartialUpload is returned after Instagram may have accepted upload
+	// bytes but a later upload/configure/status stage failed. Callers must not
+	// blindly retry with a different idempotency key.
+	ErrPartialUpload = errors.New("instagram: partial upload")
+
+	// ErrUploadTooLarge is returned locally, before any request, when declared
+	// or streamed media exceeds the configured upload limit.
+	ErrUploadTooLarge = errors.New("instagram: upload too large")
+
+	// ErrInvalidPublishInput is returned locally, before any request, when
+	// publishing metadata, MIME type, dimensions, duration, or stream length is
+	// invalid.
+	ErrInvalidPublishInput = errors.New("instagram: invalid publishing input")
+
+	// ErrPublishingCaptureRequired is returned before consuming media or making
+	// an HTTP request while no reviewed, current burner capture is compiled into
+	// the SDK. Publishing deliberately fails closed until that evidence exists.
+	ErrPublishingCaptureRequired = errors.New("instagram: verified publishing capture required")
+
 	// ErrNotFound is returned for 404s and for usernames/IDs that resolve to
 	// a user_not_found response from Instagram.
 	ErrNotFound = errors.New("instagram: not found")
@@ -43,10 +75,47 @@ var (
 	// ErrCSRF is returned when Instagram rejects a write with a CSRF error.
 	ErrCSRF = errors.New("instagram: csrf token rejected")
 
+	// ErrAccountMismatch is returned when an authenticated account response or
+	// mutation target does not match the ds_user_id bound to this client.
+	ErrAccountMismatch = errors.New("instagram: authenticated account mismatch")
+
+	// ErrMutationPrecondition is returned when an account administration write
+	// is unconfirmed, is a no-op, or its explicit Before value is stale.
+	ErrMutationPrecondition = errors.New("instagram: mutation precondition failed")
+
 	// ErrUnexpectedResponse is returned when the response is well-formed but
 	// does not contain the expected fields. The wrapped error gives detail.
 	ErrUnexpectedResponse = errors.New("instagram: unexpected response")
 )
+
+// AccountMismatchError identifies the expected and observed account IDs
+// without exposing credentials or response bodies.
+type AccountMismatchError struct {
+	ExpectedAccountID string
+	ActualAccountID   string
+}
+
+func (e *AccountMismatchError) Error() string {
+	return fmt.Sprintf("%s: expected account %q, got %q", ErrAccountMismatch, e.ExpectedAccountID, e.ActualAccountID)
+}
+
+func (e *AccountMismatchError) Unwrap() error { return ErrAccountMismatch }
+
+// MutationPreconditionError describes a locally rejected administration
+// mutation. Field is an allowlisted field name and never contains a secret.
+type MutationPreconditionError struct {
+	Field  string
+	Reason string
+}
+
+func (e *MutationPreconditionError) Error() string {
+	if e.Field == "" {
+		return fmt.Sprintf("%s: %s", ErrMutationPrecondition, e.Reason)
+	}
+	return fmt.Sprintf("%s: %s: %s", ErrMutationPrecondition, e.Field, e.Reason)
+}
+
+func (e *MutationPreconditionError) Unwrap() error { return ErrMutationPrecondition }
 
 // APIError carries the raw status code and body from a non-2xx response.
 type APIError struct {

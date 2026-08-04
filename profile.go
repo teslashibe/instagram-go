@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // GetProfile fetches a user's full profile by username.
@@ -25,7 +26,7 @@ func (c *Client) GetProfile(ctx context.Context, username string) (*User, error)
 		Status string `json:"status"`
 	}
 	if err := c.doJSON(ctx, "GET", "/api/v1/users/web_profile_info/", q, &requestOptions{
-		Referer: baseURL + "/" + username + "/",
+		Referer: c.wwwHost + "/" + username + "/",
 	}, &resp); err != nil {
 		return nil, err
 	}
@@ -65,7 +66,14 @@ func (c *Client) currentUser(ctx context.Context) (*User, error) {
 	if c.cookies.DSUserID == "" {
 		return nil, fmt.Errorf("%w: DSUserID required for session validation", ErrInvalidAuth)
 	}
-	return c.GetProfileByID(ctx, c.cookies.DSUserID)
+	u, err := c.GetProfileByID(ctx, c.cookies.DSUserID)
+	if err != nil {
+		return nil, err
+	}
+	if u.ID != c.cookies.DSUserID {
+		return nil, &AccountMismatchError{ExpectedAccountID: c.cookies.DSUserID, ActualAccountID: u.ID}
+	}
+	return u, nil
 }
 
 // parseUser unmarshals a user payload (possibly with numeric or string pk)
@@ -73,10 +81,10 @@ func (c *Client) currentUser(ctx context.Context) (*User, error) {
 func parseUser(raw json.RawMessage) (*User, error) {
 	// Local view — also captures the alternate ID fields Instagram uses.
 	var aux struct {
-		PK     any    `json:"pk"`
-		PKID   string `json:"pk_id"`
-		ID     any    `json:"id"`
-		UserID any    `json:"user_id"`
+		PK     json.RawMessage `json:"pk"`
+		PKID   json.RawMessage `json:"pk_id"`
+		ID     json.RawMessage `json:"id"`
+		UserID json.RawMessage `json:"user_id"`
 
 		Username       string `json:"username"`
 		FullName       string `json:"full_name"`
@@ -113,6 +121,11 @@ func parseUser(raw json.RawMessage) (*User, error) {
 		AccountType any `json:"account_type"`
 
 		Pronouns []string `json:"pronouns"`
+
+		SearchSERPType      string `json:"search_serp_type"`
+		SearchSocialContext string `json:"search_social_context"`
+		SocialContext       string `json:"social_context"`
+		IsSearchBoosted     bool   `json:"is_verified_search_boosted"`
 
 		Friendship *FriendshipStatus `json:"friendship_status"`
 
@@ -181,6 +194,10 @@ func parseUser(raw json.RawMessage) (*User, error) {
 		Zip:                 aux.Zip,
 		AccountType:         anyToInt(aux.AccountType),
 		Pronouns:            aux.Pronouns,
+		SearchSERPType:      aux.SearchSERPType,
+		SearchSocialContext: aux.SearchSocialContext,
+		SocialContext:       aux.SocialContext,
+		IsSearchBoosted:     aux.IsSearchBoosted,
 		FriendshipStatus:    aux.Friendship,
 		Raw:                 raw,
 	}, nil
@@ -201,6 +218,24 @@ func stringifyID(vals ...any) string {
 		case json.Number:
 			if s := t.String(); s != "" && s != "0" {
 				return s
+			}
+		case json.RawMessage:
+			raw := strings.TrimSpace(string(t))
+			if raw == "" || raw == "null" {
+				continue
+			}
+			if raw[0] == '"' {
+				var s string
+				if err := json.Unmarshal(t, &s); err == nil && s != "" {
+					return s
+				}
+				continue
+			}
+			var n json.Number
+			if err := json.Unmarshal(t, &n); err == nil {
+				if s := n.String(); s != "" && s != "0" {
+					return s
+				}
 			}
 		case int:
 			if t != 0 {

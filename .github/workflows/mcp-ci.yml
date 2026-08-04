@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - "mcp/**"
+      - "meta/**"
       - "go.mod"
       - "go.sum"
       - ".github/workflows/mcp-ci.yml"
   pull_request:
     paths:
       - "mcp/**"
+      - "meta/**"
       - "**/*.go"
       - "go.mod"
       - "go.sum"
@@ -33,5 +35,5 @@ jobs:
         run: go vet ./...
       - name: Build
         run: go build ./...
-      - name: Test mcp package
-        run: go test -race -count=1 ./mcp/...
+      - name: Test MCP and Meta packages
+        run: go test -race -count=1 ./mcp/... ./meta/...

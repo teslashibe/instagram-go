@@ -40,6 +40,10 @@ type User struct {
 	Zip                 string   `json:"zip,omitempty"`
 	AccountType         int      `json:"account_type,omitempty"`
 	Pronouns            []string `json:"pronouns,omitempty"`
+	SearchSERPType      string   `json:"search_serp_type,omitempty"`
+	SearchSocialContext string   `json:"search_social_context,omitempty"`
+	SocialContext       string   `json:"social_context,omitempty"`
+	IsSearchBoosted     bool     `json:"is_verified_search_boosted,omitempty"`
 
 	FriendshipStatus *FriendshipStatus `json:"friendship_status,omitempty"`
 
@@ -214,6 +218,61 @@ type Story struct {
 	Raw json.RawMessage `json:"-"`
 }
 
+// DirectThread is a conversation returned by the authenticated viewer's
+// Instagram Direct inbox. Direct payloads are private; Raw must never be
+// logged or persisted without explicit redaction.
+type DirectThread struct {
+	ID             string        `json:"thread_id"`
+	Title          string        `json:"thread_title,omitempty"`
+	Users          []*User       `json:"users,omitempty"`
+	Items          []*DirectItem `json:"items,omitempty"`
+	LastActivityAt int64         `json:"last_activity_at,omitempty"`
+	IsGroup        bool          `json:"is_group,omitempty"`
+	IsPending      bool          `json:"is_pending,omitempty"`
+	Muted          bool          `json:"muted,omitempty"`
+	ReadState      int           `json:"read_state,omitempty"`
+
+	Raw json.RawMessage `json:"-"`
+}
+
+// DirectItem is one item in an Instagram Direct thread. Text is populated
+// only for captured text items; attachments, reactions, vanish mode, and
+// administrative events are intentionally left unsupported.
+type DirectItem struct {
+	ID             string `json:"item_id"`
+	ThreadID       string `json:"thread_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	ItemType       string `json:"item_type,omitempty"`
+	Text           string `json:"text,omitempty"`
+	Timestamp      int64  `json:"timestamp,omitempty"`
+	ClientContext  string `json:"client_context,omitempty"`
+	IsSentByViewer bool   `json:"is_sent_by_viewer,omitempty"`
+
+	Raw json.RawMessage `json:"-"`
+}
+
+// DirectTextRequest identifies the sole recipient and text for a Direct
+// message. ThreadID, ClientContext, and the authenticated RetryToken may be
+// supplied together to safely retry an uncertain broadcast without repeating
+// thread creation. For a new send, leave all three empty and the SDK generates
+// a cryptographically random context.
+type DirectTextRequest struct {
+	RecipientID   string `json:"recipient_id"`
+	Text          string `json:"text"`
+	ThreadID      string `json:"thread_id,omitempty"`
+	ClientContext string `json:"client_context,omitempty"`
+	RetryToken    string `json:"retry_token,omitempty"`
+}
+
+// DirectSendResult identifies the created/resolved thread and broadcast item.
+type DirectSendResult struct {
+	RecipientID   string `json:"recipient_id"`
+	ThreadID      string `json:"thread_id"`
+	ItemID        string `json:"item_id,omitempty"`
+	ClientContext string `json:"client_context"`
+	Status        string `json:"status,omitempty"`
+}
+
 // SearchResult bundles users, hashtags, and places returned by /web/search/topsearch/.
 type SearchResult struct {
 	Users    []*User    `json:"users,omitempty"`
@@ -229,8 +288,8 @@ type Place struct {
 }
 
 // Page is one page of a paginated response. NextCursor is empty when there
-// are no more results. Pass it back to the next call's WithCursor option to
-// fetch the following page.
+// are no more results. Iterator-backed methods expose it through Cursor; pass
+// it to WithCursor on a fresh iterator to fetch the following page.
 type Page[T any] struct {
 	Items      []T
 	NextCursor string
@@ -245,4 +304,81 @@ type PageOptions struct {
 	// Limit caps the number of items per request. Instagram clamps this server-side
 	// (typically 12-50 depending on the endpoint); 0 uses the endpoint default.
 	Limit int
+}
+
+// ProfileFields is the complete allowlist for profile administration. It
+// intentionally excludes username, email, phone, and every security field.
+type ProfileFields struct {
+	FullName    string `json:"full_name" jsonschema:"required"`
+	Biography   string `json:"biography" jsonschema:"required"`
+	ExternalURL string `json:"external_url" jsonschema:"required"`
+}
+
+// CurrentAccount is the safe identity/profile projection of the authenticated
+// account response. Contact and security data are never retained.
+type CurrentAccount struct {
+	AccountID      string        `json:"account_id"`
+	Username       string        `json:"username"`
+	Profile        ProfileFields `json:"profile"`
+	IsPrivate      bool          `json:"is_private"`
+	IsProfessional bool          `json:"is_professional"`
+	AccountType    int           `json:"account_type"`
+}
+
+// AccountSettings contains the reversible settings approved for mutation.
+type AccountSettings struct {
+	AccountID string        `json:"account_id"`
+	Profile   ProfileFields `json:"profile"`
+	IsPrivate bool          `json:"is_private"`
+}
+
+// ProfessionalSettings is the narrow professional-display allowlist. It does
+// not permit account conversion, contact changes, ownership, or security work.
+type ProfessionalSettings struct {
+	CategoryID      string `json:"category_id" jsonschema:"required"`
+	DisplayCategory bool   `json:"display_category" jsonschema:"required"`
+}
+
+// ProfessionalAccountState describes professional status and its reversible
+// display settings. IsProfessional and AccountType are read-only.
+type ProfessionalAccountState struct {
+	AccountID      string               `json:"account_id"`
+	IsProfessional bool                 `json:"is_professional"`
+	IsBusiness     bool                 `json:"is_business"`
+	AccountType    int                  `json:"account_type"`
+	CategoryName   string               `json:"category_name,omitempty"`
+	Settings       ProfessionalSettings `json:"settings"`
+}
+
+// UpdateProfileFieldsParams requires a complete before/after pair and an
+// explicit confirmation. ExpectedAccountID binds the operation to one account.
+type UpdateProfileFieldsParams struct {
+	ExpectedAccountID string         `json:"expected_account_id" jsonschema:"required"`
+	Before            *ProfileFields `json:"before" jsonschema:"required"`
+	After             *ProfileFields `json:"after" jsonschema:"required"`
+	Confirm           bool           `json:"confirm" jsonschema:"required"`
+}
+
+// SetPrivacyParams guards one public/private transition.
+type SetPrivacyParams struct {
+	ExpectedAccountID string `json:"expected_account_id" jsonschema:"required"`
+	Before            *bool  `json:"before" jsonschema:"required"`
+	After             *bool  `json:"after" jsonschema:"required"`
+	Confirm           bool   `json:"confirm" jsonschema:"required"`
+}
+
+// UpdateProfessionalSettingsParams guards reversible display-only settings.
+type UpdateProfessionalSettingsParams struct {
+	ExpectedAccountID string                `json:"expected_account_id" jsonschema:"required"`
+	Before            *ProfessionalSettings `json:"before" jsonschema:"required"`
+	After             *ProfessionalSettings `json:"after" jsonschema:"required"`
+	Confirm           bool                  `json:"confirm" jsonschema:"required"`
+}
+
+// AccountMutationResult records the verified state transition.
+type AccountMutationResult[T any] struct {
+	AccountID string `json:"account_id"`
+	Before    T      `json:"before"`
+	After     T      `json:"after"`
+	Verified  bool   `json:"verified"`
 }

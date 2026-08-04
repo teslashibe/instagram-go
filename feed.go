@@ -249,7 +249,7 @@ func (c *Client) userMediaIterator(userID, refererUsername string) *Iterator[*Po
 		}
 		opts := &requestOptions{}
 		if refererUsername != "" {
-			opts.Referer = baseURL + "/" + refererUsername + "/"
+			opts.Referer = c.wwwHost + "/" + refererUsername + "/"
 		}
 		if err := c.doJSON(ctx, "GET", "/api/v1/feed/user/"+userID+"/", q, opts, &resp); err != nil {
 			return Page[*Post]{}, err
@@ -274,17 +274,17 @@ func parsePostList(raws []json.RawMessage, cursor string, more bool) (Page[*Post
 // parsePost normalises a media item from any of the read endpoints.
 func parsePost(raw json.RawMessage) (*Post, error) {
 	var aux struct {
-		ID          string `json:"id"`
-		PK          any    `json:"pk"`
-		PKID        string `json:"pk_id"`
-		Code        string `json:"code"`
-		MediaType   int    `json:"media_type"`
-		ProductType string `json:"product_type"`
-		TakenAt     int64  `json:"taken_at"`
+		ID          json.RawMessage `json:"id"`
+		PK          json.RawMessage `json:"pk"`
+		PKID        json.RawMessage `json:"pk_id"`
+		Code        string          `json:"code"`
+		MediaType   int             `json:"media_type"`
+		ProductType string          `json:"product_type"`
+		TakenAt     int64           `json:"taken_at"`
 
 		Caption *struct {
-			Text   string `json:"text"`
-			UserID any    `json:"user_id"`
+			Text   string          `json:"text"`
+			UserID json.RawMessage `json:"user_id"`
 		} `json:"caption"`
 
 		User json.RawMessage `json:"user"`
@@ -319,18 +319,19 @@ func parsePost(raw json.RawMessage) (*Post, error) {
 		return nil, fmt.Errorf("%w: parse post: %v", ErrUnexpectedResponse, err)
 	}
 
+	id := stringifyID(aux.ID)
 	pk := stringifyID(aux.PKID, aux.PK)
-	if pk == "" && aux.ID != "" {
+	if pk == "" && id != "" {
 		// id is sometimes "<pk>_<owner_pk>"
-		if idx := strings.IndexByte(aux.ID, '_'); idx > 0 {
-			pk = aux.ID[:idx]
+		if idx := strings.IndexByte(id, '_'); idx > 0 {
+			pk = id[:idx]
 		} else {
-			pk = aux.ID
+			pk = id
 		}
 	}
 
 	p := &Post{
-		ID:             aux.ID,
+		ID:             id,
 		PK:             pk,
 		Code:           aux.Code,
 		MediaType:      MediaType(aux.MediaType),

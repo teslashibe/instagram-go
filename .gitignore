@@ -7,3 +7,7 @@ coverage.txt
 .idea/
 .vscode/
 .worktrees/
+*.har
+*.har.gz
+cookies.json
+instagram-cookies*.json

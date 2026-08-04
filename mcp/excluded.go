@@ -12,6 +12,5 @@ package mcp
 //   - if the method is unsuitable for an agent (internal observability,
 //     auth-only helper, etc.), add it here with a reason
 var Excluded = map[string]string{
-	"RateLimit":       "internal observability; surfaced via the host application's MCP middleware, not as a callable tool",
-	"WaitForCooldown": "internal flow-control primitive; the host should manage rate-limit cooldowns at the request layer rather than expose blocking calls to the agent",
+	"DeleteMedia": "exact-ID deletion is destructive and reserved for deliberate burner cleanup outside MCP",
 }
